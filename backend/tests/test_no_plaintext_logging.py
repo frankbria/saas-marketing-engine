@@ -10,9 +10,10 @@ from pathlib import Path
 
 APP = Path(__file__).resolve().parent.parent / "app"
 # A logging or print call that also names a secret-bearing identifier.
-LEAK = re.compile(
-    r"(print|log(?:ger)?\.\w+|logging\.\w+)\s*\([^)]*\b(plaintext|secret|ciphertext)\b"
-)
+# Best-effort tripwire (the runtime redactor in app.secrets.vault is the real defence);
+# single-line by design — multiline/AST analysis is overkill for a single-owner tool.
+SENSITIVE = r"plaintext|secret|ciphertext|token|password|api_key|vault_key"
+LEAK = re.compile(rf"(print|log(?:ger)?\.\w+|logging\.\w+)\s*\([^)]*\b({SENSITIVE})\b")
 
 
 def test_no_plaintext_logging():

@@ -3,13 +3,14 @@
 import logging
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import event, text
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.secrets import vault
 
-# A real Fernet key (generated once) so tests don't depend on the deploy env var.
-TEST_KEY = "dx1Rl47HVpUJ4gGYU3IM4x05YTyFhJbRSMn8h2RsbFQ="
+# Generate a real Fernet key at runtime so nothing key-shaped is checked in.
+TEST_KEY = SecretStr(vault.generate_key())
 SECRET = "sk_live_super_secret_token_value"
 
 

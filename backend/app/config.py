@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     workspace_root: str = "./workspace"
 
     # Symmetric vault key (Fernet) — env `SME_VAULT_KEY`, never stored in the DB (§9).
-    # None in dev until set; vault ops raise a clear error if used without it.
-    vault_key: str | None = None
+    # SecretStr so it never leaks via Settings repr/model_dump; None in dev until set.
+    vault_key: SecretStr | None = None
 
     # Dashboard origin(s) allowed to call the private API from the browser (CORS).
     # Comma-separated in the env var; the dashboard runs same-host on a different port.

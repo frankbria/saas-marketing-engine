@@ -11,6 +11,7 @@ ever matters (§9).
 """
 
 import logging
+import threading
 from datetime import datetime
 
 from cryptography.fernet import Fernet
@@ -21,6 +22,7 @@ from app.models.credential import Credential
 
 REDACTED = "***"
 _secrets: set[str] = set()
+_secrets_lock = threading.RLock()  # the worker loop logs from a background thread
 
 
 def generate_key() -> str:
@@ -29,15 +31,18 @@ def generate_key() -> str:
 
 
 def _fernet() -> Fernet:
-    if not settings.vault_key:
+    key = settings.vault_key
+    raw = key.get_secret_value() if hasattr(key, "get_secret_value") else key
+    if not raw:
         raise RuntimeError("SME_VAULT_KEY is not set — cannot encrypt/decrypt secrets")
-    return Fernet(settings.vault_key.encode())
+    return Fernet(raw.encode())
 
 
 def register_secret(plaintext: str) -> None:
     """Mark a plaintext for redaction from all logs."""
     if plaintext:
-        _secrets.add(plaintext)
+        with _secrets_lock:
+            _secrets.add(plaintext)
 
 
 def encrypt(plaintext: str) -> str:
@@ -101,11 +106,15 @@ _redaction_installed = False
 
 
 def _redact_record(record: logging.LogRecord) -> None:
-    if not _secrets:
+    # Snapshot under the lock (the set may mutate from other threads) and replace
+    # longest-first so an overlapping shorter secret can't leave part of a longer one.
+    with _secrets_lock:
+        secrets = sorted(_secrets, key=len, reverse=True)
+    if not secrets:
         return
     msg = record.getMessage()
-    if any(s in msg for s in _secrets):
-        for s in _secrets:
+    if any(s in msg for s in secrets):
+        for s in secrets:
             msg = msg.replace(s, REDACTED)
         record.msg = msg
         record.args = ()
