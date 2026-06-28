@@ -68,7 +68,7 @@ Steps:
 Deviations / assumptions:
 - `db.py` (needs SQLModel) and `scheduler.py` (APScheduler) are deferred to **S0.2** — they carry behavior, not layout; S0.1 ships the bootable skeleton + wired routers.
 - Backend deps limited to what the scaffold uses (no SQLModel/Celery/etc. yet) — YAGNI.
-- Nova theming (gray/Hugeicons/Nunito Sans) applied via the mandated preset; if the preset command isn't viable in-sandbox, ship Next.js+TS+ESLint+Tailwind and complete Nova theming as a noted follow-up.
+- Nova applied via the named `nova` shadcn preset (the mandated preset **URL** returns registry 400, so the URL-encoded gray/Hugeicons/Nunito-Sans choices were applied **manually** after scaffolding: removed lucide-react → @hugeicons/react, font → Nunito Sans, baseColor → gray, dark sidebar-primary normalized to gray). The plain Next.js+TS+ESLint+Tailwind fallback was **not** needed and is not an acceptable end state.
 
 Acceptance criteria (from issue #1):
 - [ ] backend/ (uv) + dashboard/ (Next.js Nova) per TECH_SPEC §2 layout

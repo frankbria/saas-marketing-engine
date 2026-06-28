@@ -8,26 +8,26 @@ repos:
         name: ruff (backend)
         entry: bash -c 'cd backend && uv run ruff check .'
         language: system
-        files: ^backend/.*\.py$
+        files: ^backend/(.*\.py|pyproject\.toml)$
         pass_filenames: false
 
       - id: black
         name: black --check (backend)
         entry: bash -c 'cd backend && uv run black --check .'
         language: system
-        files: ^backend/.*\.py$
+        files: ^backend/(.*\.py|pyproject\.toml)$
         pass_filenames: false
 
       - id: eslint
         name: eslint (dashboard)
         entry: bash -c 'cd dashboard && npm run lint'
         language: system
-        files: ^dashboard/.*\.(ts|tsx)$
+        files: ^dashboard/(.*\.(ts|tsx)|eslint\.config\.mjs|package\.json)$
         pass_filenames: false
 
       - id: tsc
         name: tsc --noEmit (dashboard)
         entry: bash -c 'cd dashboard && npm run typecheck'
         language: system
-        files: ^dashboard/.*\.(ts|tsx)$
+        files: ^dashboard/(.*\.(ts|tsx)|tsconfig\.json|package\.json)$
         pass_filenames: false
