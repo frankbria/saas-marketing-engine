@@ -23,3 +23,10 @@ def test_public_router_mounted():
     resp = client.get("/api/public/health")
     assert resp.status_code == 200
     assert resp.json() == {"surface": "public", "status": "ok"}
+
+
+def test_cors_allows_dashboard_origin():
+    """The dashboard origin can call the private API from the browser (S0.3)."""
+    resp = client.get("/api/private/health", headers={"Origin": "http://localhost:3010"})
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:3010"

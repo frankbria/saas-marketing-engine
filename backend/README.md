@@ -27,6 +27,20 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
 - `scheduler.py` — APScheduler `BackgroundScheduler` (heartbeat enqueues a noop, worker tick
   drains the queue), started from the app lifespan.
 
+### Product registry (S0.3)
+
+- `models/product.py` — `Product`, the first-class unit (TECH_SPEC §4). All product-specific
+  config (repo, domain, pricing, brand, budget) lives on this row (PRD G7). Defaults:
+  `monetization_model=cc_sub`, `lifecycle_state=draft`.
+- `api/private/products.py` — CRUD at `/api/private/products` (POST/GET/PATCH/DELETE).
+  `lifecycle_state` is not raw-editable here; transitions go through the state machine in
+  later phases (S1.4 / S3.2).
+- `workspace.py` — on create, scaffolds `{SME_WORKSPACE_ROOT}/{slug}/vault/` (the empty
+  credentials vault; Fernet encryption lands in S0.4). `SME_WORKSPACE_ROOT` defaults to
+  `./workspace`.
+- `SME_CORS_ORIGINS` (comma-separated; default `http://localhost:3010`) — browser origins
+  allowed to call the private API.
+
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
 No Celery/Redis/Postgres in v1 (Phase B).
