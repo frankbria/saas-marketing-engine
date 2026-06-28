@@ -13,8 +13,14 @@
 - [x] Apply Revision 0.2 to PRD + TECH_SPEC (3 user decisions below)
 - [x] Reflow PRD + TECH_SPEC + USER_STORIES bodies to inline all v0.2 deltas (no §0 supersession block; clean self-consistent docs, story IDs aligned across all three)
 - [ ] Review/approve v0.2 docs
-- [ ] Break phases into atomic GitHub issues (dependency-ordered, P0→P6)
-- [ ] Start P0 (foundation) build
+- [x] Break phases into atomic GitHub issues (#1–#34, 7 phase milestones, type labels; story IDs map 1:1 to issue numbers, S0.1=#1 … S6.4=#34)
+- [ ] Start P0 (foundation) build — issues #1–#4
+
+## GitHub setup
+- Milestones: Phase 0–6 (4/4/8/2/9/3/4 issues)
+- Labels: backend, frontend, infra, devops, ai, integration, security
+- Issue→story map is sequential: #1=S0.1, #5=S1.1, #9=S2.1, #17=S3.1, #19=S4.1, #28=S5.0, #31=S6.1
+- Dependencies expressed by story ID in each issue body (GitHub has no native hard deps)
 
 ## Revision 0.2 decisions (2026-06-28 design review)
 - Infra: SQLite(WAL) + APScheduler + job_run for v1; Celery/Postgres/Redis/Flower → Phase B only
