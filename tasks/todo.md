@@ -27,6 +27,36 @@ Self-authored plan (no plan comment on issue). TDD. 11 tests pass; live round-tr
 - [x] `infra/deploy/check-ports.sh` + `PORTS.md`: port-conflict check (8010/3010) documented vs VPS (both free)
 - [x] tests: WAL on, noop round-trips, retry-on-failure, transient-recover, unknown-kind, no celery/redis/postgres in deps
 
+## S0.3 — Product registry model + API + onboarding form (#3, branch feature/issue-3-product-registry)
+Self-authored plan (issue had acceptance criteria, no plan comment). No architectural fork:
+schema pinned by TECH_SPEC §4, patterns by existing S0.1/S0.2 code. TDD.
+
+Acceptance criteria:
+- [x] `product` model per TECH_SPEC §4 (monetization_model default `cc_sub`, marketing_domain, token_budget_cents_month)
+- [x] CRUD API (private router) + onboarding form (name, repo location, description, monetization model, domain, token budget)
+- [x] New product → isolated workspace dir + empty credentials vault; lifecycle = `draft`
+- [x] Product list view in dashboard
+- [x] No operator login (firewalled — nothing to build)
+
+Steps (TDD: test first):
+1. [x] Config: `workspace_root` setting (`SME_WORKSPACE_ROOT`, default `./workspace`).
+2. [x] `app/models/product.py`: `Product` table w/ all TECH_SPEC §4 fields; `MonetizationModel`+`LifecycleState` StrEnums; defaults cc_sub/draft; `slug` unique-indexed. Register in models `__init__`.
+3. [x] `app/workspace.py`: `create_workspace(slug)` makes `{root}/{slug}/` + `{slug}/vault/` (empty cred vault); idempotent. `remove_workspace(slug)`.
+4. [x] `app/api/private/products.py`: CRUD (POST slugifies+creates row+workspace+lifecycle=draft, GET list, GET {id}, PATCH {id}, DELETE {id}); pydantic create/update/read; wire into private `__init__`.
+5. [x] `dashboard/lib/api.ts`: typed fetch wrapper (base from `NEXT_PUBLIC_API_BASE_URL`).
+6. [x] `app/products/page.tsx` (list) + `app/products/new/page.tsx` (form); native Tailwind inputs + Button.
+
+Review fixes (codex cross-family pass):
+- [x] P1 CORS: dashboard origin calls private API cross-origin → added config-driven CORSMiddleware (`SME_CORS_ORIGINS`, default localhost:3010) + test.
+- [x] P2 lifecycle: dropped `lifecycle_state` from PATCH (transitions belong to the state machine, S1.4/S3.2) + guard test.
+- Verified live: 2 products created, workspace+vault on disk, G7 second product, delete removes workspace, lifecycle PATCH ignored. 27 backend + 6 frontend tests pass; build clean.
+
+Deviations / assumptions:
+- Vault in S0.3 = empty `vault/` dir; Fernet + `credential` table is S0.4.
+- Native styled inputs over 5 new shadcn primitives (smaller diff, internal firewalled tool).
+- DELETE included ("CRUD"); also removes workspace dir.
+- brand_json/pricing fields present-but-nullable (folded per §4, populated by S1/S2).
+
 ## GitHub setup
 - Milestones: Phase 0–6 (4/4/8/2/9/3/4 issues)
 - Labels: backend, frontend, infra, devops, ai, integration, security

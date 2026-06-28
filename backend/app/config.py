@@ -12,6 +12,13 @@ class Settings(BaseSettings):
     # SQLite (WAL) in v1; Postgres URL in Phase B. File lives in backend/ by default.
     database_url: str = "sqlite:///./sme.db"
 
+    # Per-product isolated workspace (generated site/content + credentials vault).
+    workspace_root: str = "./workspace"
+
+    # Dashboard origin(s) allowed to call the private API from the browser (CORS).
+    # Comma-separated in the env var; the dashboard runs same-host on a different port.
+    cors_origins: list[str] = ["http://localhost:3010"]
+
     # In-process worker loop / scheduler intervals (seconds).
     worker_interval_seconds: int = 5
     heartbeat_interval_seconds: int = 60

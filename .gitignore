@@ -36,5 +36,7 @@ redis-data/
 .vscode/
 
 # Generated product assets (workspaces, media)
+workspace/
+backend/workspace/
 backend/app/products/*/workspace/
 generated-sites/

@@ -7,6 +7,7 @@ TECH_SPEC §1. No auth in v1 — the private surface is firewalled at deploy tim
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
 from app.api import private, public
@@ -31,6 +32,15 @@ async def lifespan(_app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+    # The dashboard calls the private API cross-origin from the browser (different port);
+    # allow only its configured origin(s). The surface stays firewalled at deploy time.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.get("/health")
     def health() -> dict[str, str]:
