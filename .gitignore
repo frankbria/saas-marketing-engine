@@ -1,0 +1,37 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# Env & secrets — never commit
+.env
+.env.*
+!.env.example
+*.key
+secrets/*.enc
+
+# DB / local infra
+*.sqlite3
+postgres-data/
+redis-data/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Generated product assets (workspaces, media)
+backend/app/products/*/workspace/
+generated-sites/
