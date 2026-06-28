@@ -31,6 +31,7 @@ export interface Product {
 export interface ProductCreate {
   name: string
   repo_url?: string
+  repo_local_path?: string
   description?: string
   monetization_model?: MonetizationModel
   marketing_domain?: string
