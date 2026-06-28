@@ -11,7 +11,7 @@
 - [x] git init + push to github.com/frankbria/saas-marketing-engine (private, gh acct=frankbria verified)
 - [x] Multi-perspective debate review (simplicity hawk vs functionality advocate)
 - [x] Apply Revision 0.2 to PRD + TECH_SPEC (3 user decisions below)
-- [ ] Reflow PRD/TECH_SPEC bodies to inline the §0 deltas (optional; §0 is authoritative for now)
+- [x] Reflow PRD + TECH_SPEC + USER_STORIES bodies to inline all v0.2 deltas (no §0 supersession block; clean self-consistent docs, story IDs aligned across all three)
 - [ ] Review/approve v0.2 docs
 - [ ] Break phases into atomic GitHub issues (dependency-ordered, P0→P6)
 - [ ] Start P0 (foundation) build
