@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # Per-product isolated workspace (generated site/content + credentials vault).
     workspace_root: str = "./workspace"
 
+    # Symmetric vault key (Fernet) — env `SME_VAULT_KEY`, never stored in the DB (§9).
+    # None in dev until set; vault ops raise a clear error if used without it.
+    vault_key: str | None = None
+
     # Dashboard origin(s) allowed to call the private API from the browser (CORS).
     # Comma-separated in the env var; the dashboard runs same-host on a different port.
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3010"]

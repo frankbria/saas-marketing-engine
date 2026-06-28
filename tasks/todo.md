@@ -1,5 +1,24 @@
 # SaaS Marketing Engine — Working Plan
 
+## S0.4 — Encrypted credentials vault (Fernet) (#4, branch feat/s0.4-credentials-vault)
+Self-authored plan (no plan comment). No architectural fork — schema pinned by TECH_SPEC §4,
+crypto/redaction by §9. Single global key for v1 (ponytail: per-product keys deferred). TDD.
+
+Acceptance criteria (issue #4):
+- [ ] `credential` model; Fernet encrypt/decrypt with key from env `SME_VAULT_KEY` (not in DB)
+- [ ] Write/read round-trips; only ciphertext at rest
+- [ ] Plaintext never logged (lint rule + log redaction)
+- [ ] Test asserts secret absent from captured logs
+
+Steps (TDD):
+1. [ ] dep: `cryptography` in backend/pyproject.toml.
+2. [ ] config: `vault_key: str | None` (env `SME_VAULT_KEY`).
+3. [ ] `app/secrets/vault.py`: Fernet `encrypt`/`decrypt`/`generate_key`; `put_credential`/`get_credential`;
+       `SecretRedactingFilter` + `register_secret` + `install_redaction`; encrypt/decrypt register plaintext.
+4. [ ] `app/models/credential.py`: §4 fields (id, product_id, channel_id nullable, key, ciphertext, expires_at, created_at); safe `__repr__`. Register in models `__init__`.
+5. [ ] wire `install_redaction()` into main.py lifespan.
+6. [ ] tests: roundtrip; ciphertext-at-rest (raw row); missing-key raises; redaction scrubs captured logs; static lint test scans `app/` for plaintext logging.
+
 ## Phase: Discovery → PRD → Spec (current)
 - [x] Read BRAINSTORM.md transcript
 - [x] Run structured brainstorm (3 decision rounds)
