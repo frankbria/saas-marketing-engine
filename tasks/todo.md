@@ -4,20 +4,21 @@
 Self-authored plan (no plan comment). No architectural fork — schema pinned by TECH_SPEC §4,
 crypto/redaction by §9. Single global key for v1 (ponytail: per-product keys deferred). TDD.
 
-Acceptance criteria (issue #4):
-- [ ] `credential` model; Fernet encrypt/decrypt with key from env `SME_VAULT_KEY` (not in DB)
-- [ ] Write/read round-trips; only ciphertext at rest
-- [ ] Plaintext never logged (lint rule + log redaction)
-- [ ] Test asserts secret absent from captured logs
+Acceptance criteria (issue #4) — all demoed with outcome evidence:
+- [x] `credential` model; Fernet encrypt/decrypt with key from env `SME_VAULT_KEY` (not in DB)
+- [x] Write/read round-trips; only ciphertext at rest (raw SQLite row: plaintext absent)
+- [x] Plaintext never logged (lint rule + log redaction → logs show `***`)
+- [x] Test asserts secret absent from captured logs
 
-Steps (TDD):
-1. [ ] dep: `cryptography` in backend/pyproject.toml.
-2. [ ] config: `vault_key: str | None` (env `SME_VAULT_KEY`).
-3. [ ] `app/secrets/vault.py`: Fernet `encrypt`/`decrypt`/`generate_key`; `put_credential`/`get_credential`;
-       `SecretRedactingFilter` + `register_secret` + `install_redaction`; encrypt/decrypt register plaintext.
-4. [ ] `app/models/credential.py`: §4 fields (id, product_id, channel_id nullable, key, ciphertext, expires_at, created_at); safe `__repr__`. Register in models `__init__`.
-5. [ ] wire `install_redaction()` into main.py lifespan.
-6. [ ] tests: roundtrip; ciphertext-at-rest (raw row); missing-key raises; redaction scrubs captured logs; static lint test scans `app/` for plaintext logging.
+Steps (TDD) — all done. 40 tests pass; ruff+black clean.
+1. [x] dep: `cryptography==45.0.5`.
+2. [x] config: `vault_key: SecretStr | None` (env `SME_VAULT_KEY`; SecretStr after review).
+3. [x] `app/secrets/vault.py`: Fernet encrypt/decrypt/generate_key; put/get_credential (channel-scoped after codex P2); thread-safe longest-first log redaction.
+4. [x] `app/models/credential.py`: §4 fields; safe `__repr__`. Registered in models `__init__`.
+5. [x] wire `install_redaction()` into main.py lifespan.
+6. [x] tests: roundtrip; ciphertext-at-rest; missing-key raises; channel scoping; redaction; static lint.
+
+Review fixes: codex P2 (channel scoping); CodeRabbit (SecretStr key, locked longest-first redaction, broadened lint terms, runtime test key).
 
 ## Phase: Discovery → PRD → Spec (current)
 - [x] Read BRAINSTORM.md transcript
