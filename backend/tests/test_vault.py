@@ -67,6 +67,17 @@ def test_get_credential_missing_returns_none(session):
     assert vault.get_credential(session, product_id=99, key="nope") is None
 
 
+def test_channel_scoping(session):
+    # Same product + key, different scopes must not bleed into each other.
+    vault.put_credential(session, product_id=1, key="oauth", plaintext="product-level")
+    vault.put_credential(session, product_id=1, key="oauth", plaintext="chan-7", channel_id=7)
+    vault.put_credential(session, product_id=1, key="oauth", plaintext="chan-8", channel_id=8)
+
+    assert vault.get_credential(session, 1, "oauth") == "product-level"
+    assert vault.get_credential(session, 1, "oauth", channel_id=7) == "chan-7"
+    assert vault.get_credential(session, 1, "oauth", channel_id=8) == "chan-8"
+
+
 def test_secret_redacted_from_logs(caplog):
     vault.install_redaction()
     vault.encrypt(SECRET)  # registers the plaintext for redaction

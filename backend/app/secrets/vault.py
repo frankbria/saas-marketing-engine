@@ -74,11 +74,22 @@ def put_credential(
     return cred
 
 
-def get_credential(session: Session, product_id: int, key: str) -> str | None:
-    """Decrypt the latest secret for (product_id, key), or None if absent."""
+def get_credential(
+    session: Session, product_id: int, key: str, *, channel_id: int | None = None
+) -> str | None:
+    """Decrypt the latest secret for (product_id, key, channel_id), or None if absent.
+
+    `channel_id=None` matches product-level secrets (channel_id IS NULL), mirroring
+    `put_credential` — so a per-channel token is never returned for a product-level
+    lookup, and vice versa.
+    """
     cred = session.exec(
         select(Credential)
-        .where(Credential.product_id == product_id, Credential.key == key)
+        .where(
+            Credential.product_id == product_id,
+            Credential.key == key,
+            Credential.channel_id == channel_id,
+        )
         .order_by(Credential.id.desc())
     ).first()
     return decrypt(cred.ciphertext) if cred else None
