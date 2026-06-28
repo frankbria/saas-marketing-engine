@@ -15,7 +15,13 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app import worker
 from app.models import JobRun, JobStatus
 from app.scheduler import create_scheduler
-from app.worker import MAX_ATTEMPTS, enqueue, handler, run_due_jobs
+from app.worker import (
+    MAX_ATTEMPTS,
+    enqueue,
+    handler,
+    reclaim_running_jobs,
+    run_due_jobs,
+)
 
 
 @pytest.fixture
@@ -109,6 +115,43 @@ def test_transient_failure_then_success(session):
         assert job.token_cost_cents == 7
     finally:
         worker._HANDLERS.pop("flaky", None)
+
+
+def test_failed_handler_partial_writes_are_rolled_back(session):
+    """A handler that writes then raises must not commit its side effects."""
+
+    @handler("partial_then_fail")
+    def _partial(_job, sess):
+        sess.add(JobRun(kind="orphan_side_effect"))  # pending, uncommitted write...
+        raise RuntimeError("after the write")  # ...then fail before commit
+
+    try:
+        job = enqueue(session, "partial_then_fail")
+        run_due_jobs(session)
+        session.refresh(job)
+        assert job.status == JobStatus.QUEUED  # re-queued (attempt 1 of 3)
+        # Without the rollback, recording the failure would flush the orphan add.
+        kinds = [j.kind for j in session.exec(select(JobRun)).all()]
+        assert kinds == ["partial_then_fail"]
+    finally:
+        worker._HANDLERS.pop("partial_then_fail", None)
+
+
+def test_reclaim_running_jobs_requeues_orphans(session):
+    job = enqueue(session, "noop")
+    job.status = JobStatus.RUNNING  # simulate a crash mid-handler
+    session.add(job)
+    session.commit()
+
+    reclaimed = reclaim_running_jobs(session)
+
+    assert reclaimed == 1
+    session.refresh(job)
+    assert job.status == JobStatus.QUEUED
+    # And it now runs to completion on the next pass.
+    run_due_jobs(session)
+    session.refresh(job)
+    assert job.status == JobStatus.DONE
 
 
 def test_unknown_kind_fails_immediately(session):

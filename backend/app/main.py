@@ -7,16 +7,20 @@ TECH_SPEC §1. No auth in v1 — the private surface is firewalled at deploy tim
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlmodel import Session
 
 from app.api import private, public
 from app.config import settings
-from app.db import init_db
+from app.db import engine, init_db
 from app.scheduler import create_scheduler
+from app.worker import reclaim_running_jobs
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    with Session(engine) as session:
+        reclaim_running_jobs(session)  # recover jobs orphaned by a previous crash
     scheduler = create_scheduler()
     scheduler.start()
     try:

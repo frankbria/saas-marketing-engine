@@ -49,12 +49,33 @@ def enqueue(session: Session, kind: str, product_id: int | None = None) -> JobRu
     return job
 
 
+def reclaim_running_jobs(session: Session) -> int:
+    """Requeue jobs stuck in RUNNING — orphaned by a crash mid-handler.
+
+    v1 runs a single in-process worker, so any RUNNING row at startup is orphaned
+    (no live worker owns it). Flip it back to QUEUED for another attempt. Returns the
+    count reclaimed. ponytail: a lease/timeout field belongs in Phase B, when multiple
+    workers make "stuck vs. in-flight" ambiguous; single-process v1 has no ambiguity.
+    """
+    stuck = session.exec(select(JobRun).where(JobRun.status == JobStatus.RUNNING)).all()
+    for job in stuck:
+        job.status = JobStatus.QUEUED
+        session.add(job)
+    session.commit()
+    return len(stuck)
+
+
 def run_due_jobs(session: Session) -> int:
     """Execute every queued job once. Returns the number of rows processed.
 
     A handler raising leaves the row queued for a later pass until MAX_ATTEMPTS, at
     which point it is marked FAILED. Unknown kinds fail immediately as configuration
     errors (no point retrying).
+
+    ponytail: assumes a single in-process worker (TECH_SPEC §1). Rows are selected then
+    marked RUNNING without an atomic claim — safe because APScheduler runs the worker
+    job with max_instances=1 in one process. Phase B (multiple workers) needs a
+    SELECT ... FOR UPDATE / atomic UPDATE claim; that arrives with Celery/Postgres.
     """
     jobs = session.exec(select(JobRun).where(JobRun.status == JobStatus.QUEUED)).all()
     for job in jobs:
@@ -70,6 +91,10 @@ def run_due_jobs(session: Session) -> int:
                 raise LookupError(f"no handler registered for kind={job.kind!r}")
             job.token_cost_cents += fn(job, session)
         except Exception as exc:  # noqa: BLE001 — record any handler failure, never crash the loop
+            # Discard any partial writes the handler made (and any broken transaction
+            # state) before recording the outcome, so a failed job never commits its
+            # side effects. The RUNNING/attempts row was already committed above.
+            session.rollback()
             job.error = str(exc)
             unrecoverable = isinstance(exc, LookupError)
             if unrecoverable or job.attempts >= MAX_ATTEMPTS:
