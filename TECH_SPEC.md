@@ -12,6 +12,18 @@ as the first fixture** (not a special case).
 > only as test-fixture data and the acceptance demo. Any new product must run end-to-end with
 > zero code changes. Reviewers reject PRs that reference a specific product by name in logic.
 
+## 0. Revision 0.2 deltas (authoritative — supersedes conflicting text below; see PRD §0)
+
+- **Storage/scheduler:** SQLite (WAL) + APScheduler + `job_run` table for v1. Celery/Redis/Flower + Postgres return in Phase B. Replace all v1 references to Celery/beat/Redis/Flower accordingly; "enqueue a job" = insert a `job_run` row + APScheduler/worker-loop with a retry column.
+- **API split:** two FastAPI surfaces — **public** funnel-ingest (`/api/funnel/...` visit/lead, `/api/stripe/webhook`), rate-limited + narrowly validated + CORS for the product origin; **private** dashboard/operator API on the firewalled interface. NFR-1's no-auth applies only to the private surface.
+- **Data model:** fold `brand_kit`→`product.brand_json` and `pricing_plan`→fields on `product` (amount_cents, interval, stripe_price_id) for v1. Add to `content_item`: `idempotency_key`, `tracking_token` (UTM), `attribution_channel_id`. Add `lead` table with `first_touch_token`. Implement `monetization_model = cc_sub` only.
+- **Channels:** v1 = blog (owned, file/API write, autonomous) + Reddit (PRAW, warmed/value-first, autonomous). X/IG/YouTube deferred or human-assisted. **Drop browser-automation fallback** in v1. Add `delete(external_url)` to the adapter Protocol. Add per-channel pacing (`scheduled_for` spacing + per-platform daily cap) and proactive OAuth refresh (on-fail → mark channel `failed` + alert).
+- **Crank quality gate (merged):** single LLM critic call → `{score, safety_pass, notes}`; below threshold → regenerate (max N); `safety_pass=false` → hard block. **Plus** a non-LLM blocklist/regex guard and a claim-traces-to-brief check. **Plus** human spot-check: hold first item per channel + random 10%. Generator and critic use different model tiers; novelty enforced by feeding recent published items into the generator.
+- **Landing site:** one `site-template/` as the whole site; AI fills copy slots + brand tokens (no bespoke layout gen). **Pre-QA smoke test** (build + 4 funnel events fire + Checkout hits test price) runs before the human QA gate.
+- **Attribution:** UTM per published link → first-touch cookie → `lead.first_touch_token` → Stripe Checkout `client_reference_id`/metadata → webhook join → `metric_event(stage=paid, channel_id)`.
+- **Observability:** daily heartbeat digest (published/failed/reach per channel) + alerts on repeated publish-fail, dead token, or zero-reach. Replaces Flower for the operator.
+- **Cost:** per-product monthly token budget with hard stop; log token usage per `job_run`. Phase B media GPU is out-of-scope spend, decided separately.
+
 ---
 
 ## 1. Architecture overview
@@ -51,9 +63,11 @@ as the first fixture** (not a special case).
                    Generated assets (landing site, media, content)
 ```
 
-**Processes on the VPS:** `fastapi` (uvicorn/gunicorn), `next` (dashboard), `celery worker`,
-`celery beat`, `flower`, `postgres`, `redis`. Plus generated **per-product landing sites**
-(static export served by nginx, or a small Next app per product — see §6).
+**Processes on the VPS (v1, per §0):** `fastapi` (uvicorn/gunicorn — runs APScheduler + an
+in-process worker loop), `next` (dashboard), `nginx`. SQLite file for state. Plus generated
+**per-product landing sites** (static export served by nginx). *Phase B adds `celery worker`/
+`beat`/`flower`/`redis`/`postgres` when long media jobs arrive — the diagram above shows the
+Phase-B shape.*
 
 **Why this split:** the FastAPI app owns state + API and enqueues work; Celery owns anything
 slow or scheduled (strategy analysis, media generation, publishing). The dashboard never does
@@ -301,8 +315,11 @@ social/blog for the same or other products. `job_run` records every task for the
 
 ## 11. Deployment (Hostinger dev VPS, 195.35.14.177)
 - **Check port conflicts before binding** (existing services on the box — see server memory).
-  Proposed ports (verify free): FastAPI `:8010`, dashboard `:3010`, Flower `:5555`,
-  Postgres `:5432` (or non-default if taken), Redis `:6379` (or non-default).
+  v1 ports (verify free): FastAPI `:8010`, dashboard `:3010`. SQLite is a file (no port).
+  Phase B adds Postgres/Redis/Flower ports then.
+- **Public vs private (per §0):** dashboard + private API on the firewalled/private interface
+  (no auth); the **public funnel-ingest API** (`/api/funnel/*`, `/api/stripe/webhook`) and the
+  generated landing sites are internet-facing via nginx, rate-limited, with CORS for the product origin.
 - nginx reverse-proxies the dashboard (private/allowlisted) and serves generated landing sites
   (public, per product domain).
 - **CORS**: dashboard origin ↔ FastAPI must be configured before first remote deploy.

@@ -1,14 +1,29 @@
 # SaaS Marketing Engine — Working Plan
 
-## Phase: Discovery → PRD (current)
+## Phase: Discovery → PRD → Spec (current)
 - [x] Read BRAINSTORM.md transcript
 - [x] Run structured brainstorm (3 decision rounds)
 - [x] Write PRD.md
 - [x] Write USER_STORIES.md
-- [ ] Frank fills "Inputs Needed" (Auto Author description + repo location)
-- [ ] Review/approve PRD + user stories
-- [ ] Generate technical spec from approved PRD
-- [ ] Break phases into atomic GitHub issues (dependency-ordered)
+- [x] Frank filled inputs (Auto Author = github.com/frankbria/auto-author; no accounts/brand; autoauthor.app domain; dashboard no-auth/firewalled)
+- [x] Write TECH_SPEC.md
+- [x] Add G7 no-product-hardcoding rule (Auto Author is fixture only)
+- [x] git init + push to github.com/frankbria/saas-marketing-engine (private, gh acct=frankbria verified)
+- [x] Multi-perspective debate review (simplicity hawk vs functionality advocate)
+- [x] Apply Revision 0.2 to PRD + TECH_SPEC (3 user decisions below)
+- [ ] Reflow PRD/TECH_SPEC bodies to inline the §0 deltas (optional; §0 is authoritative for now)
+- [ ] Review/approve v0.2 docs
+- [ ] Break phases into atomic GitHub issues (dependency-ordered, P0→P6)
+- [ ] Start P0 (foundation) build
+
+## Revision 0.2 decisions (2026-06-28 design review)
+- Infra: SQLite(WAL) + APScheduler + job_run for v1; Celery/Postgres/Redis/Flower → Phase B only
+- Cost: AI tokens = real metered spend, per-product budget + hard stop; Phase B media needs GPU (not on dev VPS) → text-only until separate decision
+- Channels: owned-first — blog + email autonomous, Reddit warmed/careful, X/IG/YouTube deferred/human-assisted; drop browser fallback in v1
+- Must-fix bug: split public funnel-ingest API from private dashboard API
+- Must-add (cheap): attribution chain (UTM→cookie→lead→Stripe→webhook), heartbeat+alerts (zero-reach/shadowban), publish idempotency+novelty, adapter delete()/retract, pre-QA site smoke test, SPF/DKIM/DMARC, rate pacing, OAuth refresh handling
+- Guardrail: one LLM critic {score,safety_pass,notes} + non-LLM blocklist + claim-traces-to-brief + first-item/random-10% human spot-check; generator≠critic tier
+- Simplify: cc_sub only (keep enum), one site template + AI copy (not bespoke), single welcome email, brand_kit/pricing → JSON on product
 
 ## Locked decisions (from brainstorm 2026-06-28)
 - Single-owner, multi-product (NOT multi-tenant — no auth/account isolation)

@@ -1,7 +1,32 @@
 # Product Requirements Document — SaaS Marketing Engine (SME)
 
-*Version 0.1 (draft for review) · 2026-06-28 · Owner: Frank · Operator: Greg*
-*Source: BRAINSTORM.md transcript (2026-06-27) + brainstorm decisions (2026-06-28)*
+*Version 0.2 (draft for review) · 2026-06-28 · Owner: Frank · Operator: Greg*
+*Source: BRAINSTORM.md transcript (2026-06-27) + brainstorm decisions + multi-perspective design review (2026-06-28)*
+
+---
+
+## 0. Revision 0.2 — design-review outcomes (authoritative; supersedes conflicting text below)
+
+A debate-style simplicity-vs-functionality review changed these. Where older sections disagree, this block wins.
+
+**Subtractions (v1 leaner):**
+- **Infra:** SQLite (WAL) + APScheduler + a `job_run` table — **not** Postgres/Celery/Redis/Flower. Celery + Postgres return **only in Phase B** when long media jobs make a real queue load-bearing.
+- **Channels — owned-first:** blog + email list **fully autonomous** (zero-ToS, owned). **One** warmed, value-first social channel (**Reddit**) as a careful experiment. **X / Instagram / YouTube are deferred or human-assisted in v1** (cold accounts auto-posting promo links = shadowban/ban bait). Browser-automation fallback **dropped** from v1 (it only served X/IG).
+- **Landing site:** one strong **template** with AI-written copy + brand tokens — **not** bespoke per-product layout generation (bespoke = the QA balloon PRD §12 warns about).
+- **Monetization:** implement **`cc_sub` only** in v1; keep the enum column. `trial`/`freemium` are wired when a product needs them.
+- **Email:** single welcome email, **not** a drip sequence. **Data model:** `brand_kit`/`pricing_plan` collapse to JSON/fields on `product` until multi-plan pricing is real.
+
+**Additions (cheap correctness/safety, required for an honest DoD):**
+- **API split (bug fix):** a **public, rate-limited funnel-ingest API** (visit/lead/Stripe webhook) separate from the **private** dashboard API. The public landing site cannot POST to a firewalled API.
+- **Attribution chain:** UTM (per content/channel) → cookie (first-touch) → `lead` → Stripe `client_reference_id`/metadata → webhook join → `metric_event.channel_id`. Without it "metrics flowing" can't attribute revenue to a channel/content item.
+- **Failure detection:** daily heartbeat digest + alerts on repeated publish-fail, dead OAuth token, or **zero-reach** (shadowban detection). This is what makes "unattended ≥2 weeks" verifiable (replaces Flower).
+- **Idempotency + novelty:** idempotency key per (content_item, channel) to prevent retry double-posts; feed recent published items into the generator to enforce content novelty.
+- **Retract:** adapter `delete()` + dashboard "retract" action (kill switch only stops *future* posts).
+- **Pre-QA smoke test:** automated funnel-contract test on each generated site (builds + the 4 events fire + Checkout hits the right test price) before the human QA gate; human then QAs design/content only.
+- **Guardrail (merged + hardened):** one LLM critic call returns `{score, safety_pass, notes}`; **plus** a non-LLM blocklist/regex guard and a check that every factual claim traces to the strategy brief; **plus** hold the first item per channel + random 10% for async human spot-check. Generator and critic use different model tiers.
+- **Setup checklist:** SPF/DKIM/DMARC per product domain; per-channel rate pacing/spacing with per-platform caps; proactive OAuth refresh → on-fail disable channel + alert.
+
+**Cost reality (resolves NFR-3/G6 honesty):** Claude Agent SDK tokens are treated as **real metered spend** with a **per-product monthly token budget + hard stop**. Phase B media (ElevenLabs/ACE-Step/video render) needs a **GPU the dev VPS lacks** → **Phase B stays text-only until a separate GPU/host decision**; that decision is acknowledged new spend, out of the "no new spend" claim.
 
 ---
 
@@ -150,7 +175,7 @@ Everything else — including each individual piece of published content — is 
 ## 7. Non-functional requirements
 - NFR-1. **No multi-tenancy** — single owner; skip tenant auth/isolation. **The dashboard is a VPS-firewalled internal tool with no auth in v1** (bind to localhost/private interface; access via SSH tunnel or IP allowlist). Add a single operator login later only if exposed publicly.
 - NFR-2. **Runs on the existing Hostinger dev VPS**; check port conflicts before binding; verify CORS (dashboard ↔ API) before first remote deploy.
-- NFR-3. **No new recurring spend** beyond existing VPS + AI subscriptions.
+- NFR-3. **Minimize new spend.** No new *infra* services beyond the existing VPS. AI tokens (Claude Agent SDK) are real metered spend, capped by a **per-product monthly token budget with a hard stop**. Phase B media compute (GPU) is acknowledged future spend, decided separately. *(per §0)*
 - NFR-4. Long media jobs are **resumable/retryable** (Celery) and must not block the crank for other products/channels.
 - NFR-5. Secrets encrypted at rest; never logged.
 - NFR-6. Autonomous publishing must be **pausable per product/channel** instantly from the dashboard (kill switch).
@@ -161,8 +186,8 @@ Everything else — including each individual piece of published content — is 
 ## 8. Tech stack
 - **Backend**: FastAPI (Python, `uv`).
 - **Frontend/dashboard**: Next.js (Nova template — gray palette, Hugeicons, Nunito Sans), Shadcn/UI + Tailwind. No auth in v1 (VPS-firewalled internal tool).
-- **DB**: PostgreSQL.
-- **Queue/scheduler**: Celery + Redis (+ Flower for monitoring); Celery beat for the crank schedule.
+- **DB**: SQLite (WAL) for v1 → Postgres when Phase B load demands it. *(per §0)*
+- **Queue/scheduler**: APScheduler + a `job_run` table for v1; Celery + Redis (+ Flower) return in **Phase B** for long media jobs. *(per §0)*
 - **AI**: Claude Agent SDK (latest Claude models) for strategy, generation, and critic passes.
 - **Content gen**: existing skills/tools — video-podcast-maker, ElevenLabs music / ACE-Step, manim, podcast-studio-hub generator→critic pattern.
 - **Publishing**: platform APIs (YouTube Data, Reddit, X, blog/CMS) + browser automation fallback (web-ctl / Playwright).
