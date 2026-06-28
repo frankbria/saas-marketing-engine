@@ -52,3 +52,27 @@
 - Platform API access + ToS for autonomous posting (X/Reddit/YouTube/IG) on own accounts
 - Bespoke-site QA cost vs standardized funnel contract — keep the contract strict
 - 1-month timeline is aggressive for all 4 content types — Phase B may slip; that's fine
+
+---
+
+## Issue #1 — S0.1 Monorepo scaffold (feature/issue-1-monorepo-scaffold)
+Self-authored plan (no architectural fork). TDD where meaningful (app boot + router wiring).
+
+Steps:
+1. [ ] Backend `uv` project: pyproject (fastapi/uvicorn/pydantic-settings + dev: pytest/httpx/ruff/black); `app/` package skeleton per TECH_SPEC §2 (api/private, api/public, models, modules/{strategy,setup,qa,crank,metrics}, channels, ai, secrets); `app/main.py` create_app mounting both routers + `/health`; `app/config.py` Settings. **RED**: test app boots + both router prefixes mounted + /health 200.
+2. [ ] `dashboard/` Next.js Nova (Nova preset via shadcn; fallback create-next-app + nova init); trivial smoke test; lint + tsc pass.
+3. [ ] `.pre-commit-config.yaml`: ruff + black (py), eslint + tsc (ts).
+4. [ ] `.github/workflows/ci.yml`: backend pytest + frontend lint/tsc/test on PR to main.
+5. [ ] `README.md`: project intro + feature-branch → PR → main flow + how to run/test.
+
+Deviations / assumptions:
+- `db.py` (needs SQLModel) and `scheduler.py` (APScheduler) are deferred to **S0.2** — they carry behavior, not layout; S0.1 ships the bootable skeleton + wired routers.
+- Backend deps limited to what the scaffold uses (no SQLModel/Celery/etc. yet) — YAGNI.
+- Nova theming (gray/Hugeicons/Nunito Sans) applied via the mandated preset; if the preset command isn't viable in-sandbox, ship Next.js+TS+ESLint+Tailwind and complete Nova theming as a noted follow-up.
+
+Acceptance criteria (from issue #1):
+- [ ] backend/ (uv) + dashboard/ (Next.js Nova) per TECH_SPEC §2 layout
+- [ ] FastAPI app boots with empty api/private and api/public routers wired
+- [ ] Pre-commit hooks: ruff + black (py), lint + tsc (ts) — all pass
+- [ ] CI runs backend + frontend tests on PR
+- [ ] Feature-branch → PR → main flow documented in README
