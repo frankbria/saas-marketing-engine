@@ -9,5 +9,16 @@ class Settings(BaseSettings):
     app_name: str = "SaaS Marketing Engine"
     environment: str = "dev"
 
+    # SQLite (WAL) in v1; Postgres URL in Phase B. File lives in backend/ by default.
+    database_url: str = "sqlite:///./sme.db"
+
+    # In-process worker loop / scheduler intervals (seconds).
+    worker_interval_seconds: int = 5
+    heartbeat_interval_seconds: int = 60
+
+    # v1 VPS ports (verified free — see infra/deploy/PORTS.md). SQLite is a file, no port.
+    api_port: int = 8010
+    dashboard_port: int = 3010
+
 
 settings = Settings()
