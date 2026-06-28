@@ -16,6 +16,17 @@
 - [x] Break phases into atomic GitHub issues (#1–#34, 7 phase milestones, type labels; story IDs map 1:1 to issue numbers, S0.1=#1 … S6.4=#34)
 - [ ] Start P0 (foundation) build — issues #1–#4
 
+## S0.2 — Storage + scheduler + infra (#2, branch feat/s0.2-storage-scheduler-infra) ✅
+Self-authored plan (no plan comment on issue). TDD. 11 tests pass; live round-trip demo'd.
+- [x] deps: add `sqlmodel`, `apscheduler` to backend/pyproject.toml (no celery/redis/postgres)
+- [x] `app/db.py`: SQLModel engine on SQLite, WAL + busy_timeout via PRAGMA on connect; `init_db()` (metadata.create_all — no alembic in v1), `get_session()`
+- [x] `app/models/job_run.py`: JobRun table (id, product_id nullable [no FK — product table is S0.3], kind, status, attempts, token_cost_cents, started_at, finished_at, error, created_at)
+- [x] `app/worker.py`: job handler registry + `enqueue()` + `run_due_jobs(session)` (sync, deterministic — increments attempts, retries up to MAX_ATTEMPTS, marks done/failed); `noop` handler
+- [x] `app/scheduler.py`: APScheduler BackgroundScheduler — heartbeat enqueues noop + worker tick processes queue
+- [x] wire into `main.py` lifespan: init_db + start/stop scheduler
+- [x] `infra/deploy/check-ports.sh` + `PORTS.md`: port-conflict check (8010/3010) documented vs VPS (both free)
+- [x] tests: WAL on, noop round-trips, retry-on-failure, transient-recover, unknown-kind, no celery/redis/postgres in deps
+
 ## GitHub setup
 - Milestones: Phase 0–6 (4/4/8/2/9/3/4 issues)
 - Labels: backend, frontend, infra, devops, ai, integration, security

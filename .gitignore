@@ -23,6 +23,9 @@ secrets/*.enc
 
 # DB / local infra
 *.sqlite3
+*.db
+*.db-wal
+*.db-shm
 postgres-data/
 redis-data/
 
