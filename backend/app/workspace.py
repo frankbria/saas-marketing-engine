@@ -24,5 +24,9 @@ def create_workspace(slug: str) -> Path:
 
 
 def remove_workspace(slug: str) -> None:
-    """Delete a product's workspace tree. No-op if it doesn't exist."""
-    shutil.rmtree(workspace_path(slug), ignore_errors=True)
+    """Delete a product's workspace tree. No-op if it's already gone, but a real
+    failure (permissions, file in use) propagates rather than reporting a false success."""
+    try:
+        shutil.rmtree(workspace_path(slug))
+    except FileNotFoundError:
+        pass

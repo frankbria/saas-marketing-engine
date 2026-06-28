@@ -120,3 +120,24 @@ def test_duplicate_name_gets_unique_slug(client):
     s2 = c.post("/api/private/products", json={"name": "Same"}).json()["slug"]
     assert s1 == "same"
     assert s2 == "same-2"
+
+
+def test_blank_name_rejected(client):
+    c, _ = client
+    assert c.post("/api/private/products", json={"name": "   "}).status_code == 422
+
+
+def test_negative_budget_rejected(client):
+    c, _ = client
+    resp = c.post("/api/private/products", json={"name": "Widget", "token_budget_cents_month": -5})
+    assert resp.status_code == 422
+
+
+def test_patch_bumps_updated_at(client):
+    c, _ = client
+    created = c.post("/api/private/products", json={"name": "Widget"}).json()
+    patched = c.patch(
+        f"/api/private/products/{created['id']}", json={"description": "now with words"}
+    ).json()
+    assert patched["updated_at"] >= created["updated_at"]
+    assert patched["updated_at"] != created["updated_at"]

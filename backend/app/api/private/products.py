@@ -6,10 +6,11 @@ No auth — the private surface is firewalled at deploy time (NFR-1).
 """
 
 import re
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -27,13 +28,20 @@ def slugify(name: str) -> str:
 
 
 class ProductCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1)
     repo_url: str | None = None
     repo_local_path: str | None = None
     description: str | None = None
     monetization_model: MonetizationModel = MonetizationModel.CC_SUB
     marketing_domain: str | None = None
-    token_budget_cents_month: int = 0
+    token_budget_cents_month: int = Field(default=0, ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("name must not be blank")
+        return v.strip()
 
 
 # lifecycle_state is intentionally NOT editable here — transitions go through the
@@ -46,7 +54,7 @@ class ProductUpdate(BaseModel):
     description: str | None = None
     monetization_model: MonetizationModel | None = None
     marketing_domain: str | None = None
-    token_budget_cents_month: int | None = None
+    token_budget_cents_month: int | None = Field(default=None, ge=0)
 
 
 def _unique_slug(session: Session, name: str) -> str:
@@ -62,10 +70,13 @@ def _unique_slug(session: Session, name: str) -> str:
 @router.post("", status_code=201)
 def create_product(payload: ProductCreate, session: SessionDep) -> Product:
     product = Product(slug=_unique_slug(session, payload.name), **payload.model_dump())
+    # Scaffold the workspace BEFORE persisting the row: if it fails the operator gets a
+    # 500 with nothing in the DB to retry around. create_workspace is idempotent, so a
+    # later commit failure leaves only a harmless empty dir that the retry reuses.
+    create_workspace(product.slug)
     session.add(product)
     session.commit()
     session.refresh(product)
-    create_workspace(product.slug)
     return product
 
 
@@ -89,6 +100,7 @@ def update_product(product_id: int, payload: ProductUpdate, session: SessionDep)
         raise HTTPException(status_code=404, detail="product not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(product, field, value)
+    product.updated_at = datetime.now(UTC)
     session.add(product)
     session.commit()
     session.refresh(product)

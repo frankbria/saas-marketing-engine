@@ -50,7 +50,7 @@ class Product(SQLModel, table=True):
     stripe_price_id: str | None = None
 
     marketing_domain: str | None = None
-    token_budget_cents_month: int = 0  # per-product hard cap (TECH_SPEC §5)
+    token_budget_cents_month: int = Field(default=0, ge=0)  # per-product hard cap (§5)
 
     lifecycle_state: LifecycleState = Field(default=LifecycleState.DRAFT, index=True)
     created_at: datetime = Field(default_factory=_utcnow)

@@ -20,10 +20,16 @@ export default function NewProductPage() {
     setSubmitting(true)
     setError(null)
     const data = new FormData(e.currentTarget)
+    const name = String(data.get("name") ?? "").trim()
+    if (!name) {
+      setError("Name is required.")
+      setSubmitting(false)
+      return
+    }
     const budget = data.get("token_budget_cents_month")
     try {
       await createProduct({
-        name: String(data.get("name") ?? "").trim(),
+        name,
         repo_url: String(data.get("repo_url") ?? "").trim() || undefined,
         description: String(data.get("description") ?? "").trim() || undefined,
         monetization_model: data.get("monetization_model") as MonetizationModel,
@@ -82,6 +88,7 @@ export default function NewProductPage() {
             name="token_budget_cents_month"
             type="number"
             min={0}
+            step={1}
             defaultValue={0}
             className={field}
           />
