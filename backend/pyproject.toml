@@ -1,0 +1,36 @@
+[project]
+name = "saas-marketing-engine-backend"
+version = "0.1.0"
+description = "SaaS Marketing Engine — FastAPI backend (private dashboard API + public funnel API)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi==0.116.1",
+    "uvicorn[standard]==0.35.0",
+    "pydantic==2.11.7",
+    "pydantic-settings==2.10.1",
+    "python-dotenv==1.1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.4.1",
+    "httpx==0.28.1",
+    "ruff==0.12.5",
+    "black==25.1.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
