@@ -14,6 +14,7 @@ import app.modules.strategy.brand  # noqa: F401 — registers the brand_kit job 
 import app.modules.strategy.brief  # noqa: F401 — registers the strategy_brief job handler
 import app.modules.strategy.pricing  # noqa: F401 — registers the pricing job handler
 from app.api import private, public
+from app.api.public.cors import install_funnel_cors
 from app.config import settings
 from app.db import engine, init_db
 from app.scheduler import create_scheduler
@@ -46,13 +47,18 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Per-product CORS for the public /api/funnel/* surface. Mounted last so it sits
+    # *outside* the global CORSMiddleware and can answer funnel preflights itself (S2.2).
+    install_funnel_cors(app)
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
     app.include_router(private.router, prefix="/api/private", tags=["private"])
-    app.include_router(public.router, prefix="/api/public", tags=["public"])
+    # Public surface mounts at /api so funnel/stripe land on their internet-facing AC paths
+    # (/api/funnel/{slug}/…, /api/stripe/webhook). Health stays at /api/public/health.
+    app.include_router(public.router, prefix="/api", tags=["public"])
     return app
 
 

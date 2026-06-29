@@ -1,5 +1,46 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.2 — Public funnel-ingest API (split from private) (#10, branch feature/issue-10-public-funnel-ingest)
+Self-authored plan (no plan comment; only a CodeRabbit placeholder). No architectural fork.
+
+**Context:** a public landing site cannot POST to the firewalled private dashboard API. Split a
+narrow internet-facing public router off, with the security posture an internet endpoint needs:
+rate limiting, strict validation, per-product CORS. The private API stays firewalled and untouched.
+
+Acceptance criteria (issue #10):
+- [ ] Public router: `POST /api/funnel/{slug}/visit`, `POST /api/funnel/{slug}/lead`, `POST /api/stripe/webhook`
+- [ ] Rate-limited + strictly validated; CORS for the product origin only
+- [ ] Private dashboard/operator API stays on the firewalled interface (unchanged)
+- [ ] nginx fronts the public router internet-facing; private stays allowlisted (deploy docs)
+
+Design decisions (autonomous — no fork):
+1. **Routing** — mount public surface router at `/api` (was `/api/public`); move public health to
+   `/public/health` so `/api/public/health` is preserved (test_app_boots green). Add `funnel`
+   (prefix `/funnel`) + `stripe` (prefix `/stripe`) routers → exact AC paths.
+2. **Persistence** — one minimal `FunnelEvent` table covers visit + lead (event_type, product_id,
+   email?, utm_*, first_touch_token, created_at). S2.4 (email) / S2.5 (attribution) extend it.
+3. **Rate limiting** — tiny in-process fixed-window limiter dependency. **No new dep** (single-process
+   VPS v1). Ceiling noted in code; swap for slowapi+Redis if multi-worker.
+4. **Per-product CORS** — middleware on `/api/funnel/*` only: echoes `Origin` iff it matches the
+   product's `marketing_domain`; answers preflight `OPTIONS`. Stripe webhook is server-to-server.
+5. **Stripe webhook** — stdlib HMAC-SHA256 verify (Stripe `t=…,v1=…` scheme) + timestamp tolerance
+   (replay guard). **No `stripe` SDK dep** for S2.2 (receive+verify only). Global
+   `SME_STRIPE_WEBHOOK_SECRET`; missing secret → reject loudly. Event processing is S2.5.
+6. **Validation** — Pydantic: lead `email` format, UTM optional bounded strings, `first_touch_token`
+   optional. Unknown slug → 404.
+
+Steps (TDD: test first):
+1. [ ] `config.py`: `rate_limit_requests`, `rate_limit_window_seconds`, `stripe_webhook_secret`.
+2. [ ] `models/funnel_event.py`: `FunnelEvent` + `FunnelEventType`; register in `models/__init__`.
+3. [ ] `api/public/ratelimit.py`: fixed-window limiter dependency (key = slug + client IP).
+4. [ ] `api/public/funnel.py`: visit + lead (validate, rate-limit, persist 201).
+5. [ ] `api/public/stripe.py`: webhook (stdlib HMAC verify + timestamp tolerance → 200).
+6. [ ] `api/public/cors.py` + `main.py`: per-product CORS middleware for `/api/funnel/*`.
+7. [ ] `api/public/__init__.py`: health → `/public/health`; include funnel + stripe.
+8. [ ] `main.py`: mount public router at `/api`.
+9. [ ] tests: `test_public_funnel.py`, `test_stripe_webhook.py`, `test_public_cors_ratelimit.py`; keep `test_app_boots` green.
+10. [ ] deploy docs: nginx fronts `/api/funnel` + `/api/stripe`; private stays allowlisted.
+
 ## S1.4 — Owner review/edit + approve strategy (#8, branch feat/s1.4-approve-strategy)
 Self-authored plan (issue had no plan comment). No architectural fork — the strategy artifacts
 already exist (`StrategyBrief` row + `product.brand_json` + `product.price_*`); S1.4 adds
