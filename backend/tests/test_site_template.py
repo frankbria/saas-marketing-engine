@@ -102,6 +102,12 @@ def test_site_content_rejects_non_hex_color():
         _stub_content(primary_color="blue")
 
 
+def test_site_content_rejects_css_injection_in_font():
+    # font_family lands verbatim in a <style> block — a CSS-delimiter payload must be rejected.
+    with pytest.raises(ValueError):
+        _stub_content(font_family="serif} body{display:none} .x{")
+
+
 # ---- render: funnel contract + brand tokens ------------------------------------------------
 
 
@@ -175,6 +181,19 @@ def test_deploy_requires_marketing_domain(session, workspace):
     site_dir = site_mod.build_site(product, _stub_content())
     with pytest.raises(RuntimeError, match="no marketing_domain"):
         site_mod.deploy_site(product, site_dir)
+
+
+@pytest.mark.parametrize(
+    "evil", ["../../etc", "/etc/nginx", "a/b", "foo;rm -rf", "..", "localhost"]
+)
+def test_deploy_rejects_non_hostname_domain(session, workspace, evil):
+    """A path-traversal / metacharacter domain must not reach rmtree/copytree or the vhost."""
+    product = _make_product(session, domain=evil)
+    site_dir = site_mod.build_site(product, _stub_content())
+    with pytest.raises(RuntimeError, match="not a valid hostname"):
+        site_mod.deploy_site(product, site_dir)
+    # nothing escaped the configured root
+    assert not (workspace / "nginx").exists() or not any((workspace / "nginx").iterdir())
 
 
 # ---- handler: persistence-free, returns cost -----------------------------------------------

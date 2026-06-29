@@ -16,6 +16,7 @@ ponytail: "deploy" places the static files under the configured nginx web root a
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -43,6 +44,15 @@ from app.workspace import workspace_path
 # (setup → modules → app → backend → repo root).
 _TEMPLATE_DIR = Path(__file__).resolve().parents[4] / "site-template"
 _TEMPLATE_NAME = "index.html.j2"
+
+# marketing_domain becomes a filesystem path component AND an nginx `server_name` — both dangerous
+# if it isn't a real hostname. The product API takes it as a free-form string, so reject anything
+# that isn't a plain DNS hostname (no path separators, `..`, control chars, or nginx metacharacters)
+# at the point of use, closing path-traversal (rmtree/copytree) and config-injection.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
 
 # Autoescape unconditionally — AI/owner copy is injected into a public page, so escaping is an
 # XSS guard, not a nicety. `| tojson` in the template handles the JS-string config safely.
@@ -78,10 +88,16 @@ def build_site(product: Product, content: SiteContent) -> Path:
 
 def deploy_site(product: Product, site_dir: Path) -> Path:
     """Place the static site under nginx's web root keyed by `marketing_domain` + emit a vhost."""
-    if not product.marketing_domain:
+    domain = product.marketing_domain
+    if not domain:
         raise RuntimeError(f"product {product.id} has no marketing_domain; cannot deploy site")
+    if not _HOSTNAME_RE.match(domain):
+        raise RuntimeError(
+            f"product {product.id} marketing_domain {domain!r} is not a valid hostname; refusing "
+            "to use it as a filesystem path / nginx server_name"
+        )
     root = Path(settings.nginx_sites_root)
-    dest = root / product.marketing_domain
+    dest = root / domain
     if dest.exists():
         shutil.rmtree(dest)  # replace wholesale — the build is the source of truth
     shutil.copytree(site_dir, dest)
@@ -89,13 +105,13 @@ def deploy_site(product: Product, site_dir: Path) -> Path:
     vhost = (
         f"server {{\n"
         f"    listen 80;\n"
-        f"    server_name {product.marketing_domain};\n"
+        f"    server_name {domain};\n"
         f"    root {dest};\n"
         f"    index index.html;\n"
         f"    location / {{ try_files $uri $uri/ /index.html; }}\n"
         f"}}\n"
     )
-    (root / f"{product.marketing_domain}.conf").write_text(vhost, encoding="utf-8")
+    (root / f"{domain}.conf").write_text(vhost, encoding="utf-8")
     return dest
 
 

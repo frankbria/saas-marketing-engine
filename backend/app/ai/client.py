@@ -91,7 +91,10 @@ class SiteContent(BaseModel):
     cta_label: str  # primary call-to-action button label, e.g. "Start free"
     primary_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")  # brand primary, hex
     accent_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")  # brand accent, hex
-    font_family: str  # CSS font stack, e.g. 'Georgia, serif'
+    # CSS font stack rendered verbatim into a <style> block — HTML autoescaping does NOT make a
+    # value safe in CSS context, so constrain it to font-name tokens (no ;{}()<> delimiters) to
+    # block CSS injection from a malformed or prompt-injected model response.
+    font_family: str = Field(pattern=r"^[\w ,.'\"-]+$", max_length=200)  # e.g. 'Georgia, serif'
 
 
 class PricingRecommendation(BaseModel):
