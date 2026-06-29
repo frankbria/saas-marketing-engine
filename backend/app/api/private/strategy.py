@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import Product, StrategyBrief
+from app.models import MonetizationModel, Product, StrategyBrief
 from app.worker import enqueue
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
@@ -40,4 +40,23 @@ def trigger_brand_kit(product_id: int, session: SessionDep) -> dict:
     if brief is None:
         raise HTTPException(status_code=400, detail="product has no strategy brief; run it first")
     job = enqueue(session, "brand_kit", product_id=product_id)
+    return {"job_id": job.id, "status": job.status}
+
+
+@router.post("/{product_id}/pricing", status_code=202)
+def trigger_pricing(product_id: int, session: SessionDep) -> dict:
+    product = session.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    if product.monetization_model != MonetizationModel.CC_SUB:
+        raise HTTPException(
+            status_code=400,
+            detail="pricing recommendation only supported for cc_sub (trial/freemium unwired)",
+        )
+    brief = session.exec(
+        select(StrategyBrief).where(StrategyBrief.product_id == product_id)
+    ).first()
+    if brief is None:
+        raise HTTPException(status_code=400, detail="product has no strategy brief; run it first")
+    job = enqueue(session, "pricing", product_id=product_id)
     return {"job_id": job.id, "status": job.status}

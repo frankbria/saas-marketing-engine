@@ -55,6 +55,10 @@ class ProductUpdate(BaseModel):
     monetization_model: MonetizationModel | None = None
     marketing_domain: str | None = None
     token_budget_cents_month: int | None = Field(default=None, ge=0)
+    # Pricing is recommended by S1.3 and editable by the owner here. Interval stays a free string to
+    # match the column; the recommender constrains its own output to month/year.
+    price_amount_cents: int | None = Field(default=None, gt=0)
+    price_interval: str | None = None
 
 
 def _unique_slug(session: Session, name: str) -> str:

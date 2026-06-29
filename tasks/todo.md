@@ -1,5 +1,29 @@
 # SaaS Marketing Engine — Working Plan
 
+## S1.3 — Pricing recommendation (cc_sub) (#7, branch feat/s1.3-pricing-recommendation)
+Self-authored plan (no plan comment on issue). No architectural fork — mirrors S1.2 (Brand Kit)
+exactly: single Opus structured-output call grounded in the existing `strategy_brief`, folded onto
+the already-present `product.price_*` columns, run via the async worker as a `pricing` job. No new
+table, no lifecycle change (pricing is part of the `strategy` phase). Owner-editable via PATCH. TDD.
+
+Acceptance criteria (issue #7):
+- [ ] Populates `product.price_amount_cents` + `price_interval`
+- [ ] Owner-editable
+- [ ] trial/freemium remain unwired (enum value only)
+
+Steps (TDD):
+1. [ ] `app/ai/client.py`: `PricingRecommendation{price_amount_cents:int(gt0), price_interval:Literal["month","year"]}`; `PRICING_MODEL`/`PRICING_MAX_TOKENS`; `recommend_pricing(...)` → `messages.parse` on Opus (same adaptive-thinking + scan-for-parsed_output pattern as `generate_brand_kit`), returns `(PricingRecommendation, cost_cents)`.
+2. [ ] `app/modules/strategy/pricing.py` (mirrors `brand.py`): load product + its strategy_brief (grounding) → require `monetization_model == CC_SUB` (else RuntimeError — trial/freemium unwired) → budget gate (`month_to_date_cost_cents`) + synthesis reserve → fold `product.price_amount_cents`+`price_interval`, no handler commit, no state change. `@handler("pricing")`.
+3. [ ] `app/main.py`: import pricing module to register the handler.
+4. [ ] `app/api/private/strategy.py`: `POST /strategy/{id}/pricing` → 202; 404 missing product, 400 if no brief, 400 if not cc_sub.
+5. [ ] `app/api/private/products.py`: add `price_amount_cents`/`price_interval` to `ProductUpdate` (owner-editable; PATCH applies generically).
+6. [ ] `backend/tests/test_pricing.py` (mirrors `test_brand_kit.py`): schema/persist+state-unchanged/no-brief/not-cc_sub/budget(exceeded,zero-unlimited,capped)/reserve/worker/route(202,404,400×2)/owner-edit PATCH + key-gated real-API integration.
+
+Decisions (autonomous, no fork):
+- `price_interval` constrained to `month`/`year` at the LLM-output boundary (`Literal`); product column stays `str` (no migration); PATCH stays `str` to match the column.
+- No rationale persisted — no column, AC doesn't need it (YAGNI).
+- Pricing gated to `cc_sub` at route + handler — that is how "trial/freemium remain unwired" is enforced.
+
 ## S1.2 — Brand Kit generation (`product.brand_json`) (#6, branch feat/s1.2-brand-kit)
 Self-authored plan (no plan comment on issue). No architectural fork — mirrors S1.1
 exactly: single Opus structured-output call, grounded in the existing `strategy_brief`,
