@@ -41,6 +41,44 @@ export interface StrategyBrief {
   updated_at: string
 }
 
+// S2.6: channels + human setup checklist.
+export type ChannelType = "blog" | "reddit" | "x" | "instagram" | "youtube"
+export type ConnectState = "pending" | "connected" | "failed"
+export type SetupItemStatus = "pending" | "done"
+
+export interface Channel {
+  id: number
+  product_id: number
+  type: ChannelType
+  enabled: boolean
+  autonomous: boolean
+  account_ref: string | null
+  connect_state: ConnectState
+  daily_cap: number | null
+  paused: boolean
+  profile_json: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface SetupChecklistItem {
+  id: number
+  product_id: number
+  channel_id: number | null
+  ord: number
+  instruction: string
+  category: string
+  status: SetupItemStatus
+  updated_at: string
+}
+
+export interface ConnectRequest {
+  access_token: string
+  refresh_token?: string
+  expires_at?: string
+  account_ref?: string
+}
+
 export interface ProductUpdate {
   brand_json?: string
   price_amount_cents?: number
@@ -110,3 +148,35 @@ export const updateStrategy = (productId: number, payload: BriefUpdate) =>
 
 export const approveStrategy = (productId: number) =>
   apiFetch<Product>(`/strategy/${productId}/approve`, { method: "POST" })
+
+// S2.6: channel-account setup, connect, and the human checklist.
+export const triggerChannelSetup = (productId: number) =>
+  apiFetch<{ job_id: number; status: string }>(`/channels/${productId}/setup`, {
+    method: "POST",
+  })
+
+export const listChannels = (productId: number) =>
+  apiFetch<Channel[]>(`/channels/${productId}`)
+
+export const getSetupChecklist = (productId: number) =>
+  apiFetch<SetupChecklistItem[]>(`/channels/${productId}/checklist`)
+
+export const connectChannel = (
+  productId: number,
+  channelId: number,
+  payload: ConnectRequest
+) =>
+  apiFetch<Channel>(`/channels/${productId}/${channelId}/connect`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+
+export const setChecklistItemStatus = (
+  productId: number,
+  itemId: number,
+  status: SetupItemStatus
+) =>
+  apiFetch<SetupChecklistItem>(`/channels/${productId}/checklist/${itemId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  })
