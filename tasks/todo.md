@@ -1,5 +1,42 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.4 — Email capture + welcome email (#12, branch feat/s2.4-welcome-email)
+Self-authored plan (issue had only ACs, no plan comment). No architectural fork.
+
+**Finding:** AC#1 (lead row on capture) is **already satisfied** by S2.2's `POST /funnel/{slug}/lead`
+→ `_record`. The only new work is the welcome email + the explicit "no drip" boundary.
+
+**Decisions (autonomous, no fork):**
+- **SMTP via stdlib `smtplib`/`EmailMessage`** — no new dependency, mirrors the repo's no-SDK
+  convention (stripe_api/webhook are stdlib `urllib`/`hmac`). `SME_SMTP_*` config; `smtp_host` unset
+  ⇒ email disabled (skip + log), matching the existing "None until configured" pattern.
+- **Best-effort send on a FastAPI `BackgroundTasks`** — a slow/down SMTP server must never block or
+  500 lead capture (the lead row is the asset). Send errors are caught + logged. `ponytail:` no
+  retry/queue/bounce-handling in v1.
+- **Sender seam** `get_welcome_sender` (mirrors `get_checkout_creator`) — overridable in tests, no
+  network/mocking lib.
+- **No drip engine** — exactly one send per captured lead; no scheduler/sequence.
+
+Acceptance criteria (issue #12) — all demoed with outcome evidence:
+- [x] `lead` row written on capture — already S2.2; regression assertion added (demo: 1 LEAD row, normalized email + utm)
+- [x] One welcome email sends (SMTP/free ESP) — demo: scheduled+sent on capture
+- [x] No drip engine in v1 — one send per lead, no scheduler/sequence module
+
+Steps (TDD) — all done. 6 new tests; 176→ full suite green; ruff+black clean.
+1. [x] `config.py`: `smtp_host/port(587)/user/password(SecretStr)/from/starttls`.
+2. [x] `app/integrations/email.py`: `send_welcome(to, product)` — stdlib SMTP, verified-context
+   STARTTLS+login, plaintext body; no-op+log when unconfigured; catch+log all send/build failures.
+3. [x] `app/api/public/funnel.py`: `get_welcome_sender` seam + `BackgroundTasks`; `record_lead`
+   schedules `send(email, product)` after the row commits (refresh+expunge so the task can read it).
+4. [x] `tests/test_welcome_email.py`: capture schedules welcome · visit does not · unconfigured
+   no-op · builds+sends (fake SMTP: To/Subject/From + verified TLS context + login) · failure
+   swallowed · bad-header (CR/LF) swallowed.
+5. [x] ruff + black.
+
+Codex cross-family review (both fixed): P1 STARTTLS without verified context (credentials over
+spoofable TLS) → `ssl.create_default_context()`; P2 header construction outside best-effort guard
+(CR/LF in product name raises before `try`) → moved message build inside the guarded block + test.
+
 ## S2.3 — Stripe configuration (cc_sub, test mode) (#11, branch feat/s2.3-stripe-config)
 Self-authored plan (no plan comment on issue; only ACs). No architectural fork.
 

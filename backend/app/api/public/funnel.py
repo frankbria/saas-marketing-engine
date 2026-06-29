@@ -9,14 +9,14 @@ import re
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlmodel import Session, select
 
 from app.api.public.ratelimit import enforce_rate_limit
 from app.config import settings
 from app.db import get_session
-from app.integrations import stripe_api
+from app.integrations import email, stripe_api
 from app.models.funnel_event import FunnelEvent, FunnelEventType
 from app.models.product import Product
 
@@ -32,6 +32,14 @@ CheckoutCreator = Callable[..., str]
 
 def get_checkout_creator() -> CheckoutCreator:
     return stripe_api.create_checkout_session
+
+
+# Welcome-email sender seam (S2.4), same override pattern as the checkout creator.
+WelcomeSender = Callable[[str, Product], None]
+
+
+def get_welcome_sender() -> WelcomeSender:
+    return email.send_welcome
 
 
 # Deliberately permissive — reject the obviously-broken, not gatekeep deliverability.
@@ -105,8 +113,26 @@ def record_visit(slug: str, payload: VisitCreate, session: SessionDep) -> dict[s
 
 
 @router.post("/{slug}/lead", status_code=201, dependencies=[RateLimited])
-def record_lead(slug: str, payload: LeadCreate, session: SessionDep) -> dict[str, str]:
-    return _record(slug, FunnelEventType.LEAD, payload, session)
+def record_lead(
+    slug: str,
+    payload: LeadCreate,
+    session: SessionDep,
+    background: BackgroundTasks,
+    send: Annotated[WelcomeSender, Depends(get_welcome_sender)],
+) -> dict[str, str]:
+    product = _product_or_404(session, slug)
+    event = FunnelEvent(
+        product_id=product.id, event_type=FunnelEventType.LEAD, **payload.model_dump()
+    )
+    session.add(event)
+    session.commit()
+    # Detach `product` with its attributes loaded so the post-request background task can read it
+    # after this session closes (commit expires attributes otherwise → DetachedInstanceError).
+    session.refresh(product)
+    session.expunge(product)
+    # Best-effort welcome email off the request path — never blocks/fails the 201 (S2.4).
+    background.add_task(send, payload.email, product)
+    return {"status": "recorded"}
 
 
 @router.post("/{slug}/checkout", dependencies=[RateLimited])
