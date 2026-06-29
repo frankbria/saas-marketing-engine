@@ -41,6 +41,17 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
 - `SME_CORS_ORIGINS` (comma-separated; default `http://localhost:3010`) — browser origins
   allowed to call the private API.
 
+### Credentials vault (S0.4)
+
+- `models/credential.py` — `Credential` (TECH_SPEC §4): only Fernet `ciphertext` at rest,
+  scoped by `(product_id, key, channel_id)`; `__repr__` omits the ciphertext.
+- `secrets/vault.py` — `encrypt`/`decrypt` + `put_credential`/`get_credential`. Symmetric
+  Fernet key from env **`SME_VAULT_KEY`** (a `SecretStr`, never stored in the DB). Generate
+  one with `python -c "from app.secrets.vault import generate_key; print(generate_key())"`.
+  `install_redaction()` (wired into the app lifespan) installs a global log-record factory
+  that scrubs every vault secret from all logs; `tests/test_no_plaintext_logging.py` is the
+  static backstop. Single global key for v1 (per-product keys deferred — §9).
+
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
 No Celery/Redis/Postgres in v1 (Phase B).

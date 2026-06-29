@@ -14,11 +14,13 @@ from app.api import private, public
 from app.config import settings
 from app.db import engine, init_db
 from app.scheduler import create_scheduler
+from app.secrets.vault import install_redaction
 from app.worker import reclaim_running_jobs
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    install_redaction()  # scrub vault secrets from all logs before anything runs (§9)
     init_db()
     with Session(engine) as session:
         reclaim_running_jobs(session)  # recover jobs orphaned by a previous crash
