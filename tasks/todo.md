@@ -1,5 +1,28 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.3 — Stripe configuration (cc_sub, test mode) (#11, branch feat/s2.3-stripe-config)
+Self-authored plan (no plan comment on issue; only ACs). No architectural fork.
+
+**Decisions (autonomous):**
+- No `stripe` SDK / no new runtime dep — stdlib `urllib` form-encoded REST POSTs, matching the webhook's stdlib precedent (`app/api/public/stripe.py`). `ponytail:` no idempotency-key/retry; add when hardening for live.
+- Testability via injection (mirrors `pricing.py`/`site.py`): setup handler takes injected `create=`; checkout endpoint takes session-creator via FastAPI dependency overridable in tests (no mocking lib). Real-API tests gated on `SME_STRIPE_API_KEY`.
+- success/cancel URLs from `product.marketing_domain` (fallback `public_api_base_url`).
+- Checkout at `POST /api/funnel/{slug}/checkout` — the path the S2.1 template already calls.
+- `metric_event(stage=paid)` emission is **S2.5**; S2.3 only carries `client_reference_id`/metadata so S2.5 can join.
+
+Acceptance criteria (issue #11):
+- [ ] Create Stripe product + price; store `stripe_price_id` on product
+- [ ] Checkout completes a test-mode subscription end-to-end
+- [ ] Passes `client_reference_id`/metadata for attribution
+- [ ] Webhook → metric_event(stage=paid) + lifecycle (handler in S2.5)
+
+Steps:
+1. Config `stripe_api_key` + `app/integrations/stripe_api.py` (create_product/price/checkout_session) + `.env.example`.
+2. `app/modules/setup/stripe_setup.py` handler (cc_sub only, idempotent, persists `stripe_price_id`) + private `POST /api/private/setup/{id}/stripe`.
+3. Public `POST /api/funnel/{slug}/checkout` → returns `{url}`, passes client_reference_id + metadata.
+4. Tests: `test_stripe_setup.py`, `test_checkout.py` (offline-injected + real-API-gated).
+5. ruff + black.
+
 ## S2.1 — Templated landing site + funnel contract + UTM (#9, branch feat/s2.1-templated-landing-site)
 Self-authored plan (no plan comment on issue). No architectural fork — **clear safe default**:
 `site-template/` = one self-contained Jinja2 HTML file rendered by the Python engine (§6.1 "the
