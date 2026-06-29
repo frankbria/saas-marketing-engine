@@ -28,6 +28,9 @@ BRAND_MAX_TOKENS = 2000  # output cap for the brand kit (also the budget-reserva
 PRICING_MODEL = "claude-opus-4-8"  # pricing recommendation (S1.3)
 PRICING_MAX_TOKENS = 1000  # output cap for pricing (also the budget-reservation ceiling)
 
+SITE_MODEL = "claude-opus-4-8"  # landing-site copy + design tokens (S2.1)
+SITE_MAX_TOKENS = 1500  # output cap for site content (also the budget-reservation ceiling)
+
 
 class ICP(BaseModel):
     segment: str
@@ -72,6 +75,23 @@ class BrandKit(BaseModel):
     tone: str  # one-line overall tone
     voice_descriptors: list[VoiceDescriptor]
     visual_seeds: list[str]  # palette / imagery seed cues for the site template (§6)
+
+
+class SiteContent(BaseModel):
+    """Landing-site copy slots + concrete design tokens (S2.1, §6.1).
+
+    The AI fills these from the product's Brand Kit; the site-template layout/plumbing stay
+    constant. Colors are concrete hex (the kit's `visual_seeds` are textual cues, not values) so the
+    template can drop them straight into CSS custom properties. `font_family` is a full CSS stack.
+    """
+
+    headline: str
+    subhead: str
+    value_props: list[str] = Field(min_length=1)  # benefit bullets
+    cta_label: str  # primary call-to-action button label, e.g. "Start free"
+    primary_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")  # brand primary, hex
+    accent_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")  # brand accent, hex
+    font_family: str  # CSS font stack, e.g. 'Georgia, serif'
 
 
 class PricingRecommendation(BaseModel):
@@ -191,6 +211,54 @@ def generate_brand_kit(
         )
     cost = cost_cents(BRAND_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return kit, cost
+
+
+def generate_site_content(
+    client: anthropic.Anthropic,
+    product_name: str,
+    description: str | None,
+    brand_kit: BrandKit,
+    positioning: str,
+) -> tuple[SiteContent, int]:
+    """Write landing-site copy + design tokens from the Brand Kit. Returns (content, cost_cents)."""
+    voice = (
+        "; ".join(f"{d.descriptor}: {d.guidance}" for d in brand_kit.voice_descriptors) or "(none)"
+    )
+    seeds = ", ".join(brand_kit.visual_seeds) or "(none)"
+    user = (
+        f"Product: {product_name}\n"
+        f"Owner description: {description or '(none)'}\n"
+        f"Positioning: {positioning or '(none)'}\n"
+        f"Brand tone: {brand_kit.tone}\n"
+        f"Brand voice: {voice}\n"
+        f"Visual seeds (palette/imagery cues): {seeds}\n\n"
+        "Write the landing-page copy (headline, subhead, a few value-prop bullets, a CTA label) "
+        "on-brand for this voice, and pick concrete design tokens — a primary and accent color as "
+        "#RRGGBB hex grounded in the visual seeds, and a CSS font stack that fits the brand."
+    )
+    response = client.messages.parse(
+        model=SITE_MODEL,
+        max_tokens=SITE_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a conversion copywriter and brand designer. From a product and its brand kit, "
+            "produce concise, on-brand landing copy and concrete visual tokens. Colors must be "
+            "valid #RRGGBB hex; the font stack must be web-safe (no external font hosting)."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=SiteContent,
+    )
+    # adaptive thinking may emit a thinking block first — scan for the text block with the object.
+    content = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if content is None:  # refusal or unparsable — surface, don't render an empty site
+        raise RuntimeError(
+            f"site content generation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(SITE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return content, cost
 
 
 def recommend_pricing(

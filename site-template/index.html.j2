@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ content.headline }}</title>
+  <style>
+    :root {
+      --primary: {{ content.primary_color }};
+      --accent: {{ content.accent_color }};
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: {{ content.font_family }};
+      color: #111;
+      line-height: 1.5;
+    }
+    .hero {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 4rem 1.5rem;
+      text-align: center;
+    }
+    h1 { font-size: 2.5rem; color: var(--primary); margin: 0 0 1rem; }
+    .subhead { font-size: 1.25rem; color: #444; margin: 0 0 2rem; }
+    ul.value-props { list-style: none; padding: 0; margin: 0 0 2.5rem; text-align: left; display: inline-block; }
+    ul.value-props li { padding: 0.4rem 0 0.4rem 1.75rem; position: relative; }
+    ul.value-props li::before { content: "✓"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+    .cta { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+    button, input[type="email"] {
+      font: inherit; padding: 0.75rem 1.25rem; border-radius: 8px; border: 1px solid #ccc;
+    }
+    button { cursor: pointer; border: none; color: #fff; font-weight: 600; }
+    #checkout { background: var(--primary); }
+    #email-capture button { background: var(--accent); }
+    form#email-capture { display: flex; gap: 0.5rem; }
+  </style>
+</head>
+<body>
+  <main class="hero">
+    <h1>{{ content.headline }}</h1>
+    <p class="subhead">{{ content.subhead }}</p>
+    <ul class="value-props">
+      {% for prop in content.value_props %}<li>{{ prop }}</li>{% endfor %}
+    </ul>
+    <div class="cta">
+      <!-- <EmailCapture>: POSTs the public funnel /lead endpoint, fires the `signup` event -->
+      <form id="email-capture">
+        <input type="email" name="email" placeholder="you@example.com" required />
+        <button type="submit">{{ content.cta_label }}</button>
+      </form>
+      <!-- <StripeCheckout>: starts Checkout carrying client_reference_id (Stripe session is S2.3) -->
+      <button id="checkout" type="button">Subscribe</button>
+    </div>
+  </main>
+
+  <!-- Funnel contract plumbing (constant across every generated site). -->
+  <script>
+    (function () {
+      var API = {{ api_base_url | tojson }};
+      var SLUG = {{ slug | tojson }};
+
+      // --- UTM capture + first-touch cookie ---
+      function getCookie(n) { return (document.cookie.match("(^|;)\\s*" + n + "\\s*=\\s*([^;]+)") || [])[2]; }
+      function setCookie(n, v) { document.cookie = n + "=" + v + ";path=/;max-age=31536000;SameSite=Lax"; }
+      var params = new URLSearchParams(location.search);
+      var utm = {};
+      ["source", "medium", "campaign", "content", "term"].forEach(function (k) {
+        var v = params.get("utm_" + k); if (v) utm["utm_" + k] = v;
+      });
+      var token = getCookie("first_touch_token");
+      if (!token) {
+        token = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
+        setCookie("first_touch_token", token);
+      }
+
+      function payload(extra) {
+        var p = Object.assign({ first_touch_token: token }, utm);
+        if (extra) Object.assign(p, extra);
+        return JSON.stringify(p);
+      }
+      function post(path, body) {
+        return fetch(API + "/api/funnel/" + SLUG + path, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: body
+        });
+      }
+
+      // --- <AnalyticsSnippet>: fire `visit` on load ---
+      post("/visit", payload());
+
+      // --- <EmailCapture>: fire `signup` (lead) on submit ---
+      var form = document.getElementById("email-capture");
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        post("/lead", payload({ email: form.email.value })).then(function () {
+          form.innerHTML = "<p>Thanks — check your inbox.</p>";
+        });
+      });
+
+      // --- <StripeCheckout>: redirect to Checkout with client_reference_id = first_touch_token ---
+      document.getElementById("checkout").addEventListener("click", function () {
+        post("/checkout", payload({ client_reference_id: token }))
+          .then(function (r) { return r.json(); })
+          .then(function (d) { if (d && d.url) location.href = d.url; });
+      });
+    })();
+  </script>
+</body>
+</html>
