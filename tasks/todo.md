@@ -27,16 +27,19 @@ Design (autonomous, no fork):
   (channel-scoped), sets `connect_state=connected`. Known limitation: per-provider authorize/callback
   redirect deferred — dashboard runs each platform's own OAuth and posts the token here.
 
-Steps (TDD):
-1. [ ] `models/channel.py` + `models/setup_checklist_item.py`; register in `models/__init__.py`.
-2. [ ] `ai/client.py`: ChannelProfile/ChannelProfiles + `generate_channel_profiles` + consts.
-3. [ ] `modules/setup/channels.py`: `setup_channels` handler (upsert channels from brief plan, fold
+Steps (TDD) — all done. PR #51. Backend 209 passed/2 skipped; dashboard 15 passed; demo green on all 5 ACs.
+1. [x] `models/channel.py` + `models/setup_checklist_item.py`; register in `models/__init__.py`.
+2. [x] `ai/client.py`: ChannelProfile/ChannelProfiles + `generate_channel_profiles` + consts.
+3. [x] `modules/setup/channels.py`: `setup_channels` handler (upsert channels from brief plan, fold
    profile_json+warmup, emit deterministic checklist, budget gate, no inner commit). Import in main.py.
-4. [ ] `api/private/channels.py`: POST /{pid}/setup · GET /{pid} · GET /{pid}/checklist ·
+4. [x] `api/private/channels.py`: POST /{pid}/setup · GET /{pid} · GET /{pid}/checklist ·
    POST /{pid}/{cid}/connect · PATCH /{pid}/checklist/{item_id}. Register in private `__init__`.
-5. [ ] dashboard: `lib/api.ts` types+fns; `app/products/[id]/channel-setup.tsx`; mount in page.tsx.
-6. [ ] tests: test_channel_model, test_channels_setup, test_channels_api; extend lib/api.test.ts.
-7. [ ] ruff + black.
+5. [x] dashboard: `lib/api.ts` types+fns; `app/products/[id]/channel-setup.tsx`; mount in page.tsx.
+6. [x] tests: test_channel_model, test_channels_setup, test_channels_api; extend lib/api.test.ts.
+7. [x] ruff + black.
+
+Codex cross-family review: 1 P2 (silent blank profiles when the model omits a requested channel)
+→ now raises `RuntimeError` (job fails/retries) + regression test, matching the brand-kit pattern.
 
 ## S2.5 — Attribution chain (UTM → lead → Stripe → webhook) (#13)
 Self-authored plan (issue had only ACs, no plan comment). No architectural fork.
