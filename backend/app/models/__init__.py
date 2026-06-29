@@ -3,6 +3,7 @@
 from app.models.credential import Credential
 from app.models.funnel_event import FunnelEvent, FunnelEventType
 from app.models.job_run import JobRun, JobStatus
+from app.models.metric_event import MetricEvent, MetricStage
 from app.models.product import LifecycleState, MonetizationModel, Product
 from app.models.strategy_brief import StrategyBrief
 
@@ -13,6 +14,8 @@ __all__ = [
     "JobRun",
     "JobStatus",
     "LifecycleState",
+    "MetricEvent",
+    "MetricStage",
     "MonetizationModel",
     "Product",
     "StrategyBrief",

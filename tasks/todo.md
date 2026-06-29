@@ -1,5 +1,39 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.5 — Attribution chain (UTM → lead → Stripe → webhook) (#13)
+Self-authored plan (issue had only ACs, no plan comment). No architectural fork.
+
+**Finding:** S2.1–S2.4 already built every link *up to* the webhook: the site template sets the
+`first_touch_token` cookie from UTM + fires visit/lead, `funnel_event` stores `first_touch_token`,
+and `start_checkout` (S2.3) passes `client_reference_id` + `metadata{first_touch_token, product_id}`.
+The webhook (S2.2) verifies the signature but only returns `{received:true}`. The **only** gap is the
+webhook *join* + the `metric_event(stage=paid)` write.
+
+**Decisions (autonomous, no fork):**
+- New `metric_event` table per TECH_SPEC §4 (`product_id, channel_id?, content_item_id?, stage, value,
+  occurred_at, source`). `channel_id`/`content_item_id` stay **null** — those tables don't exist until
+  S4.x; the honest attribution available now is token → lead → product. `ponytail:` comment marks it.
+- Webhook join is the **primary** attribution (`client_reference_id` → LEAD `FunnelEvent` → `product_id`),
+  with checkout `metadata.product_id` as fallback. Unattributable session → ack Stripe (200), write nothing.
+- Idempotent on `source = "stripe:<session_id>"` (Stripe redelivers events) — provenance + dedup in one field.
+- `value` = `amount_total` (cents). Only `checkout.session.completed` handled; other event types ignored.
+- No `stripe` SDK — parse the already-signature-verified JSON body (stdlib), matching repo convention.
+
+Acceptance criteria (issue #13):
+- [ ] UTM per published link → first-touch cookie — ✅ already S2.1 (regression-covered by test_site_template)
+- [ ] Token persisted onto `lead.first_touch_token` — ✅ already S2.2
+- [ ] Passed as Stripe Checkout `client_reference_id` — ✅ already S2.3 (start_checkout)
+- [ ] Webhook joins back → `metric_event(stage=paid, channel_id, content_item_id)` — **this story**
+- [ ] Integration test: simulated UTM visit → lead → test sub → attributed paid metric — **this story**
+
+Steps (TDD):
+1. [ ] `app/models/metric_event.py`: `MetricEvent` + `MetricStage` enum; register in `models/__init__`.
+2. [ ] `app/api/public/stripe.py`: parse verified body; on `checkout.session.completed` join token→lead→product
+   (fallback metadata) → write paid `metric_event`, idempotent on source. Add `get_session` dependency.
+3. [ ] `tests/test_attribution.py`: full-chain integration (visit→lead→signed webhook→paid metric) +
+   idempotent redelivery + unattributable ignored + non-paid event ignored.
+4. [ ] ruff + black.
+
 ## S2.4 — Email capture + welcome email (#12, branch feat/s2.4-welcome-email)
 Self-authored plan (issue had only ACs, no plan comment). No architectural fork.
 
