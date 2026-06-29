@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlmodel import Session
 
 from app.db import get_session
@@ -71,18 +72,26 @@ def emit_checklist(product_id: int, session: SessionDep) -> LaunchChecklist:
             detail=f"product is {product.lifecycle_state}, not setup_done; "
             "the launch checklist is emitted after setup completes",
         )
-    smoke = (
-        SmokeTestResult.model_validate_json(product.smoke_test_json)
-        if product.smoke_test_json
-        else None
-    )
-    if smoke is None or not smoke.passed:
+    if not product.smoke_test_json:
+        raise HTTPException(
+            status_code=409,
+            detail="run and pass the pre-QA smoke test before emitting the launch checklist",
+        )
+    try:
+        smoke = SmokeTestResult.model_validate_json(product.smoke_test_json)
+    except ValidationError as exc:
+        # Stored verdict is corrupt/schema-drifted — don't 500; tell the operator to re-run it.
+        raise HTTPException(
+            status_code=409,
+            detail="stored smoke-test result is unreadable; re-run the pre-QA smoke test",
+        ) from exc
+    if not smoke.passed:
         raise HTTPException(
             status_code=409,
             detail="run and pass the pre-QA smoke test before emitting the launch checklist",
         )
 
-    checklist = emit_launch_checklist(product, session)
+    checklist = emit_launch_checklist(product, session, smoke)
     # Re-check the gate after the (synchronous) read so two overlapping POSTs can't both start from
     # setup_done and double-cross the gate.
     session.refresh(product)

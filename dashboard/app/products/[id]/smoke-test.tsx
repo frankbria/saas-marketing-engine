@@ -19,7 +19,8 @@ function parseResult(json: string | null): SmokeTestResult | null {
   }
 }
 
-// The smoke test runs only once setup is complete; a pass advances the product to `qa`.
+// The smoke test runs only once setup is complete; a pass clears the smoke gate, then the launch
+// checklist (S2.8) is emitted to cross to `qa`.
 export function SmokeTest({
   productId,
   lifecycleState,
@@ -34,9 +35,9 @@ export function SmokeTest({
   const [error, setError] = useState<string | null>(null)
 
   const result = parseResult(smokeTestJson)
-  // The smoke test is a one-shot pre-QA gate: it runs only in setup_done, and a pass advances the
-  // product to qa (the backend 409s otherwise). So the action is offered only while runnable; once
-  // past the gate the panel is a read-only record of the verdict.
+  // The smoke test runs only in setup_done and records its verdict (it no longer transitions state
+  // on its own — emitting the launch checklist does). So the action is offered only while runnable;
+  // once past the gate the panel is a read-only record of the verdict.
   const runnable = lifecycleState === "setup_done"
   const beforeGate = ["draft", "strategy", "setup_ready"].includes(lifecycleState)
 
@@ -79,7 +80,9 @@ export function SmokeTest({
               result.passed ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
             }`}
           >
-            {result.passed ? "passed → ready for QA" : "failed → stays in setup_done"}
+            {result.passed
+              ? "passed → emit the launch checklist to reach QA"
+              : "failed → stays in setup_done"}
           </span>
           <ul className="flex flex-col gap-1">
             {result.stages.map((stage) => (

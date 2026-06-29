@@ -38,13 +38,12 @@ class LaunchChecklist(BaseModel):
     items: list[LaunchChecklistItem]
 
 
-def emit_launch_checklist(product: Product, session: Session) -> LaunchChecklist:
-    """Build the launch checklist from `product`'s real setup output. Never raises."""
-    smoke: SmokeTestResult | None = (
-        SmokeTestResult.model_validate_json(product.smoke_test_json)
-        if product.smoke_test_json
-        else None
-    )
+def emit_launch_checklist(
+    product: Product, session: Session, smoke: SmokeTestResult | None
+) -> LaunchChecklist:
+    """Build the launch checklist from `product`'s real setup output and the (already-validated)
+    smoke verdict. Pure aside from two read-only queries; it does not parse stored JSON, so the
+    caller owns validating `smoke_test_json`."""
     stage_ok = {s.stage: s.ok for s in smoke.stages} if smoke else {}
 
     items: list[LaunchChecklistItem] = []

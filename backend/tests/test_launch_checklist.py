@@ -184,6 +184,23 @@ def test_smoke_not_run_blocks_gate(ctx):
     assert _state(engine, product_id) == LifecycleState.SETUP_DONE
 
 
+def test_corrupt_smoke_json_blocks_gate(ctx):
+    # A non-null but unreadable stored smoke verdict must 409, not 500.
+    app, engine = ctx
+    product_id = _seed(engine)
+    with Session(engine) as s:
+        product = s.get(Product, product_id)
+        product.smoke_test_json = "{not valid json"
+        s.add(product)
+        s.commit()
+
+    with TestClient(app) as client:
+        resp = client.post(f"/api/private/qa/{product_id}/launch-checklist")
+
+    assert resp.status_code == 409
+    assert _state(engine, product_id) == LifecycleState.SETUP_DONE
+
+
 def test_wrong_state_rejected(ctx):
     app, engine = ctx
     product_id = _seed(engine, state=LifecycleState.SETUP_READY)
