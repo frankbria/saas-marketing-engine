@@ -13,6 +13,7 @@ import {
 } from "@/lib/api"
 
 import { ChannelSetup } from "./channel-setup"
+import { SmokeTest } from "./smoke-test"
 import { StrategyReview } from "./strategy-review"
 
 export const dynamic = "force-dynamic"
@@ -81,6 +82,12 @@ export default async function ProductDetailPage({
         productId={productId}
         channels={channels}
         checklist={checklist}
+      />
+
+      <SmokeTest
+        productId={productId}
+        lifecycleState={product.lifecycle_state}
+        smokeTestJson={product.smoke_test_json}
       />
     </div>
   )

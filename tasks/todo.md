@@ -1,5 +1,52 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.7 — Pre-QA funnel smoke test (#15)
+Self-authored plan (issue had ACs only, no plan comment). No architectural fork.
+
+**Goal:** auto-verify a generated site before the human QA gate — broken plumbing never reaches a human.
+
+Acceptance criteria (issue #15):
+- [ ] Asserts: site builds + four funnel events fire + Checkout hits correct test price
+- [ ] Failure keeps product in `setup_done` (never reaches `qa`)
+- [ ] Result surfaced in dashboard
+
+Design (autonomous, no fork):
+- **Synchronous** private endpoint `POST /api/private/qa/{product_id}/smoke-test` — the test is fast
+  (no LLM, no real network) so it runs inline and returns a verdict the dashboard shows immediately
+  (vs. async job-queue: needless indirection for a fast on-demand verify).
+- **No prod pollution:** synthetic funnel traffic (visit/lead/checkout/paid) runs against an isolated
+  in-memory SQLite DB seeded with a clone of the product. Real `FunnelEvent`/`MetricEvent` tables are
+  never written. Funnel paths exercised by calling the real route fns directly (`record_visit`,
+  `record_lead`, `start_checkout`, `_attribute_paid_metric`) — no HTTP/portal.
+- **build/impression** stages assert the *real* built artifact (`workspace/<slug>/site/index.html`);
+  re-building would cost LLM tokens, so the smoke test verifies the build's artifact, not a rebuild.
+- Result persisted as one `smoke_test_json` column on `Product` (lazy: no new table; visible via the
+  existing product GET).
+- Gate: product must be in `setup_done`. Pass → `qa`. Fail → stays `setup_done`.
+
+Stage → AC map (6 stages, all must pass): `build` (artifact exists, non-empty) · `impression` (built
+HTML wires the funnel contract: visit-on-load + /visit + /lead + /checkout) · `visit`
+(FunnelEvent VISIT) · `signup` (FunnelEvent LEAD) · `checkout` (start_checkout uses
+`stripe_price_id` = correct test price) · `paid` (webhook → MetricEvent PAID at `price_amount_cents`).
+
+Steps (TDD) — all done. Backend 215 passed/2 skipped; dashboard 16 tests + lint + tsc + build clean.
+1. [x] `models/product.py`: add `smoke_test_json: str | None`.
+2. [x] `modules/qa/smoke_test.py`: `StageResult`/`SmokeTestResult` + `run_smoke_test(product)`
+   (isolated in-memory exercise of the funnel; real artifact for build/impression).
+3. [x] `api/private/qa.py`: `POST /{product_id}/smoke-test` — gate setup_done, run, persist, transition.
+4. [x] mount `qa` router in `api/private/__init__.py`.
+5. [x] `tests/test_smoke_test.py`: pass→qa + no real-table pollution; each stage failure→stays
+   setup_done; 409 wrong-state; 404 unknown.
+6. [x] dashboard: `lib/api.ts` (Product.smoke_test_json + SmokeTestResult + runSmokeTest);
+   `smoke-test.tsx` panel (run + per-stage badges, gated on setup_done); mount in page.tsx; api.test.ts.
+
+Deviations / assumptions:
+- `impression` stage verifies the wired entry hook, not a recorded impression metric — no impression
+  plumbing exists in v1 (channel reach is S4.x). Documented in code.
+- Gate strictly on `setup_done` per AC. Nothing yet transitions a product *into* `setup_done`
+  (human-setup-checklist territory, S2.6/S2.8) — out of scope here.
+- New column via `create_all` (no Alembic in v1; consistent with prior stories adding Product fields).
+
 ## S2.6 — Channel accounts + human setup checklist + OAuth connect (#14)
 Self-authored plan (issue had only ACs, no plan comment). No architectural fork — token-ingestion
 connect endpoint is the safe default (full per-provider authorize/callback deferred; untestable

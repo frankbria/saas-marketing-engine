@@ -21,8 +21,23 @@ export interface Product {
   price_amount_cents: number | null
   price_interval: string | null
   lifecycle_state: LifecycleState
+  // S2.7: JSON-encoded SmokeTestResult of the latest pre-QA smoke test (null until first run).
+  smoke_test_json: string | null
   created_at: string
   updated_at: string
+}
+
+// S2.7: pre-QA smoke-test result (mirrors the backend SmokeTestResult / StageResult).
+export interface SmokeStageResult {
+  stage: string
+  ok: boolean
+  detail: string
+}
+
+export interface SmokeTestResult {
+  passed: boolean
+  ran_at: string
+  stages: SmokeStageResult[]
 }
 
 // The strategy brief (S1.1). The *_json fields are JSON-encoded strings the owner reviews/edits.
@@ -180,3 +195,7 @@ export const setChecklistItemStatus = (
     method: "PATCH",
     body: JSON.stringify({ status }),
   })
+
+// S2.7: run the pre-QA funnel smoke test. A full pass advances the product to `qa`.
+export const runSmokeTest = (productId: number) =>
+  apiFetch<SmokeTestResult>(`/qa/${productId}/smoke-test`, { method: "POST" })

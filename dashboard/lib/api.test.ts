@@ -7,6 +7,7 @@ import {
   getSetupChecklist,
   getStrategy,
   listChannels,
+  runSmokeTest,
   setChecklistItemStatus,
   triggerChannelSetup,
   updateProduct,
@@ -122,5 +123,15 @@ describe("channels + setup checklist (S2.6)", () => {
     expect(url).toContain("/api/private/channels/7/checklist/9")
     expect(init?.method).toBe("PATCH")
     expect(init?.body).toBe(JSON.stringify({ status: "done" }))
+  })
+})
+
+describe("pre-QA smoke test (S2.7)", () => {
+  it("runSmokeTest POSTs the smoke-test endpoint", async () => {
+    const fetchMock = mockFetch({ passed: true, ran_at: "now", stages: [] })
+    await runSmokeTest(7)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/qa/7/smoke-test")
+    expect(init?.method).toBe("POST")
   })
 })
