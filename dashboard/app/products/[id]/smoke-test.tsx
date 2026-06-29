@@ -34,7 +34,11 @@ export function SmokeTest({
   const [error, setError] = useState<string | null>(null)
 
   const result = parseResult(smokeTestJson)
+  // The smoke test is a one-shot pre-QA gate: it runs only in setup_done, and a pass advances the
+  // product to qa (the backend 409s otherwise). So the action is offered only while runnable; once
+  // past the gate the panel is a read-only record of the verdict.
   const runnable = lifecycleState === "setup_done"
+  const beforeGate = ["draft", "strategy", "setup_ready"].includes(lifecycleState)
 
   async function run() {
     setBusy(true)
@@ -53,12 +57,14 @@ export function SmokeTest({
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">Pre-QA smoke test</h2>
-        <Button type="button" variant="outline" disabled={busy || !runnable} onClick={run}>
-          {result ? "Re-run smoke test" : "Run smoke test"}
-        </Button>
+        {runnable && (
+          <Button type="button" variant="outline" disabled={busy} onClick={run}>
+            {result ? "Re-run smoke test" : "Run smoke test"}
+          </Button>
+        )}
       </div>
 
-      {!runnable && (
+      {beforeGate && (
         <p className="text-sm text-muted-foreground">
           Available once setup is complete (product in <span className="font-mono">setup_done</span>).
         </p>
