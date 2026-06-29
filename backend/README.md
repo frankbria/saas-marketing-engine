@@ -46,8 +46,10 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
 - `models/credential.py` — `Credential` (TECH_SPEC §4): only Fernet `ciphertext` at rest,
   scoped by `(product_id, key, channel_id)`; `__repr__` omits the ciphertext.
 - `secrets/vault.py` — `encrypt`/`decrypt` + `put_credential`/`get_credential`. Symmetric
-  Fernet key from env **`SME_VAULT_KEY`** (a `SecretStr`, never stored in the DB). Generate
-  one with `python -c "from app.secrets.vault import generate_key; print(generate_key())"`.
+  Fernet key from env **`SME_VAULT_KEY`** (a `SecretStr`, never stored in the DB). Generate one
+  (run from `backend/` so the `app` package resolves):
+  `cd backend && uv run python -c "from app.secrets.vault import generate_key; print(generate_key())"`,
+  then put it in `backend/.env` (copy `backend/.env.example` to start).
   `install_redaction()` (wired into the app lifespan) installs a global log-record factory
   that scrubs every vault secret from all logs; `tests/test_no_plaintext_logging.py` is the
   static backstop. Single global key for v1 (per-product keys deferred — §9).
