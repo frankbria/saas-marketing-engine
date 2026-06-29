@@ -53,5 +53,8 @@ class Product(SQLModel, table=True):
     token_budget_cents_month: int = Field(default=0, ge=0)  # per-product hard cap (§5)
 
     lifecycle_state: LifecycleState = Field(default=LifecycleState.DRAFT, index=True)
+    # Latest pre-QA smoke-test result (S2.7), JSON-encoded `SmokeTestResult`; folded onto the row so
+    # the dashboard reads it from the existing product GET (no separate table in v1).
+    smoke_test_json: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
