@@ -98,7 +98,16 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   join; requires an attribution token (422 without), 409 until Stripe is configured, returns `{url}`.
   The products PATCH keeps the invariant *`stripe_price_id` set ⟹ priced `cc_sub`*: a real price
   change or a switch off `cc_sub` clears it (no-op resubmits preserved). Real-API tests gated on
-  `SME_STRIPE_API_KEY`; `metric_event(stage=paid)` emission is S2.5.
+  `SME_STRIPE_API_KEY`.
+- `models/metric_event.py` (S2.5) — `MetricEvent` (TECH_SPEC §4): `product_id`, nullable
+  `channel_id`/`content_item_id` (those tables arrive in P4), `stage`
+  (`impression|visit|signup|paid`), `value` (cents for `paid`), `occurred_at`, and a `source`
+  provenance/idempotency key (`unique`).
+- `api/public/stripe.py` (S2.5) — closes the attribution chain: on a signature-verified
+  `checkout.session.completed`, joins `client_reference_id` → lead `funnel_event` → `product_id`
+  (fallback: checkout `metadata.product_id`) and writes `metric_event(stage=paid, value=amount_total)`.
+  Unattributable session → ack (200), no write. Idempotent on `source="stripe:<session_id>"`
+  (app pre-check + a `unique` constraint backstop so a concurrent redelivery can't double-count).
 
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
