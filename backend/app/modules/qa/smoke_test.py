@@ -2,8 +2,10 @@
 
 Before a product can reach the human QA gate it must pass an automated smoke test that asserts the
 generated site **builds**, the four-stage funnel path (`impression/visit/signup/paid`) **fires**,
-and Checkout hits the **correct test price**. A failure keeps the product in `setup_done`; only a
-full pass advances it to `qa` (the transition is owned by the route in `api/private/qa.py`).
+and Checkout hits the **correct test price**. A failure keeps the product in `setup_done`. A pass
+records the verdict but does **not** transition on its own: emitting the launch checklist (S2.8) is
+what crosses `setup_done → qa`, so the gate needs smoke pass *and* checklist emitted (TECH_SPEC
+line 112). The route in `api/private/qa.py` owns both steps.
 
 The funnel is exercised against an **isolated in-memory SQLite database seeded with a clone of the
 product**, so synthetic smoke traffic never pollutes the product's real funnel/revenue metrics. The

@@ -13,6 +13,7 @@ import {
 } from "@/lib/api"
 
 import { ChannelSetup } from "./channel-setup"
+import { LaunchChecklist } from "./launch-checklist"
 import { SmokeTest } from "./smoke-test"
 import { StrategyReview } from "./strategy-review"
 
@@ -89,6 +90,23 @@ export default async function ProductDetailPage({
         lifecycleState={product.lifecycle_state}
         smokeTestJson={product.smoke_test_json}
       />
+
+      <LaunchChecklist
+        productId={productId}
+        lifecycleState={product.lifecycle_state}
+        launchChecklistJson={product.launch_checklist_json}
+        smokePassed={smokePassed(product.smoke_test_json)}
+      />
     </div>
   )
+}
+
+// A passing smoke test is the precondition for emitting the launch checklist (S2.8).
+function smokePassed(json: string | null): boolean {
+  if (!json) return false
+  try {
+    return (JSON.parse(json) as { passed?: boolean }).passed === true
+  } catch {
+    return false
+  }
 }

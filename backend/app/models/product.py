@@ -56,5 +56,9 @@ class Product(SQLModel, table=True):
     # Latest pre-QA smoke-test result (S2.7), JSON-encoded `SmokeTestResult`; folded onto the row so
     # the dashboard reads it from the existing product GET (no separate table in v1).
     smoke_test_json: str | None = None
+    # Launch checklist emitted from real setup output (S2.8), JSON-encoded `LaunchChecklist`;
+    # emitting it crosses setup_done → qa. Folded like smoke_test_json (no table; qa_checklist_item
+    # is S3.x).
+    launch_checklist_json: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)

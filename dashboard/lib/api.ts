@@ -23,6 +23,8 @@ export interface Product {
   lifecycle_state: LifecycleState
   // S2.7: JSON-encoded SmokeTestResult of the latest pre-QA smoke test (null until first run).
   smoke_test_json: string | null
+  // S2.8: JSON-encoded LaunchChecklist emitted from setup state (null until emitted; crosses to qa).
+  launch_checklist_json: string | null
   created_at: string
   updated_at: string
 }
@@ -38,6 +40,19 @@ export interface SmokeTestResult {
   passed: boolean
   ran_at: string
   stages: SmokeStageResult[]
+}
+
+// S2.8: launch checklist emitted from real setup state (mirrors the backend LaunchChecklist).
+export interface LaunchChecklistItem {
+  ord: number
+  label: string
+  detail: string
+  ready: boolean
+}
+
+export interface LaunchChecklist {
+  emitted_at: string
+  items: LaunchChecklistItem[]
 }
 
 // The strategy brief (S1.1). The *_json fields are JSON-encoded strings the owner reviews/edits.
@@ -196,6 +211,11 @@ export const setChecklistItemStatus = (
     body: JSON.stringify({ status }),
   })
 
-// S2.7: run the pre-QA funnel smoke test. A full pass advances the product to `qa`.
+// S2.7: run the pre-QA funnel smoke test. Records the verdict; a pass clears the smoke gate but the
+// launch-checklist step (S2.8) is what crosses to `qa`.
 export const runSmokeTest = (productId: number) =>
   apiFetch<SmokeTestResult>(`/qa/${productId}/smoke-test`, { method: "POST" })
+
+// S2.8: emit the launch checklist from setup state. Requires a passed smoke test; advances to `qa`.
+export const emitLaunchChecklist = (productId: number) =>
+  apiFetch<LaunchChecklist>(`/qa/${productId}/launch-checklist`, { method: "POST" })
