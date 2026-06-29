@@ -5,6 +5,7 @@ dir + empty credentials vault and starts the product in the `draft` lifecycle st
 No auth — the private surface is firewalled at deploy time (NFR-1).
 """
 
+import json
 import re
 from datetime import UTC, datetime
 from typing import Annotated
@@ -59,6 +60,16 @@ class ProductUpdate(BaseModel):
     # match the column; the recommender constrains its own output to month/year.
     price_amount_cents: int | None = Field(default=None, gt=0)
     price_interval: str | None = None
+    # Brand kit (S1.2) is owner-editable here (S1.4 review). Stored as a JSON string; guard
+    # well-formedness so an edit can't corrupt the brand the crank reads.
+    brand_json: str | None = None
+
+    @field_validator("brand_json")
+    @classmethod
+    def _well_formed_brand(cls, v: str | None) -> str | None:
+        if v is not None:
+            json.loads(v)  # raises → 422 via pydantic
+        return v
 
 
 def _unique_slug(session: Session, name: str) -> str:

@@ -1,5 +1,33 @@
 # SaaS Marketing Engine — Working Plan
 
+## S1.4 — Owner review/edit + approve strategy (#8, branch feat/s1.4-approve-strategy)
+Self-authored plan (issue had no plan comment). No architectural fork — the strategy artifacts
+already exist (`StrategyBrief` row + `product.brand_json` + `product.price_*`); S1.4 adds
+read/edit + an **approve** transition. `StrategyBrief.approved/approved_at` columns already exist. TDD.
+
+Acceptance criteria (issue #8):
+- [ ] Dashboard view to review + edit brief, brand, price
+- [ ] Approve transitions `strategy → setup_ready`
+- [ ] Setup is blocked until approved
+
+Design (safe defaults):
+- "Setup blocked until approved": `setup_ready` is reachable **only** via approve (product PATCH
+  already refuses `lifecycle_state`); approve refuses unless complete (brief + brand + price-for-cc_sub)
+  and product is in `strategy`. `brief.approved` is the flag future setup phases (S2.x) gate on.
+- Brief `*_json` fields edited as raw JSON (single operator); server validates well-formedness.
+  ponytail: structured form only if raw-JSON editing proves error-prone.
+
+Steps (TDD):
+1. [ ] `api/private/strategy.py`: `GET /strategy/{pid}` (brief, 404 none); `PATCH /strategy/{pid}`
+   (positioning + `*_json`, reject malformed JSON); `POST /strategy/{pid}/approve` (404/409 not-strategy/
+   400 incomplete → `approved`+`approved_at`+`setup_ready`). Add `brand_json` to `ProductUpdate` (+JSON validate).
+2. [ ] `tests/test_strategy_review.py`: GET, PATCH valid+malformed, brand_json PATCH, approve happy
+   (`strategy→setup_ready`, `approved`), approve 409 wrong-state, approve 400 incomplete, approve 400 no-brief.
+3. [ ] `dashboard/lib/api.ts`: brand/price on `Product`, `StrategyBrief` type, get/update product+brief, approve.
+4. [ ] `dashboard/app/products/[id]/page.tsx` + client `StrategyReview`: edit brief/brand/price, Save +
+   Approve (disabled unless `strategy`), state badge; link product rows → detail.
+5. [ ] `dashboard/lib/api.test.ts`: URL/shape for new client fns.
+
 ## S1.3 — Pricing recommendation (cc_sub) (#7, branch feat/s1.3-pricing-recommendation)
 Self-authored plan (no plan comment on issue). No architectural fork — mirrors S1.2 (Brand Kit)
 exactly: single Opus structured-output call grounded in the existing `strategy_brief`, folded onto
