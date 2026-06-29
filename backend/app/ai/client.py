@@ -31,6 +31,9 @@ PRICING_MAX_TOKENS = 1000  # output cap for pricing (also the budget-reservation
 SITE_MODEL = "claude-opus-4-8"  # landing-site copy + design tokens (S2.1)
 SITE_MAX_TOKENS = 1500  # output cap for site content (also the budget-reservation ceiling)
 
+CHANNEL_MODEL = "claude-opus-4-8"  # per-channel handles/bios/profile copy (S2.6)
+CHANNEL_MAX_TOKENS = 2000  # output cap for channel profiles (also the budget-reservation ceiling)
+
 
 class ICP(BaseModel):
     segment: str
@@ -95,6 +98,24 @@ class SiteContent(BaseModel):
     # value safe in CSS context, so constrain it to font-name tokens (no ;{}()<> delimiters) to
     # block CSS injection from a malformed or prompt-injected model response.
     font_family: str = Field(pattern=r"^[\w ,.'\"-]+$", max_length=200)  # e.g. 'Georgia, serif'
+
+
+class ChannelProfile(BaseModel):
+    """Engine-prepared public profile for one channel (TECH_SPEC §6.5 / S2.6).
+
+    `type` echoes the requested channel so a list response can be matched back to the right row.
+    The warm-up note is added deterministically downstream (not the model's job)."""
+
+    type: Literal["blog", "reddit", "x", "instagram", "youtube"]
+    handle: str  # suggested account handle/username
+    bio: str  # short profile bio
+    profile_copy: str  # longer "about" / profile description
+
+
+class ChannelProfiles(BaseModel):
+    """The full set of per-channel profiles the single Opus call returns (S2.6)."""
+
+    profiles: list[ChannelProfile] = Field(min_length=1)
 
 
 class PricingRecommendation(BaseModel):
@@ -262,6 +283,53 @@ def generate_site_content(
         )
     cost = cost_cents(SITE_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return content, cost
+
+
+def generate_channel_profiles(
+    client: anthropic.Anthropic,
+    product_name: str,
+    description: str | None,
+    brand_kit: BrandKit,
+    channel_types: list[str],
+) -> tuple[ChannelProfiles, int]:
+    """Write on-brand handles/bios/profile copy for each channel. Returns (profiles, cost_cents)."""
+    voice = (
+        "; ".join(f"{d.descriptor}: {d.guidance}" for d in brand_kit.voice_descriptors) or "(none)"
+    )
+    user = (
+        f"Product: {product_name}\n"
+        f"Owner description: {description or '(none)'}\n"
+        f"Brand name: {brand_kit.name}\n"
+        f"Brand tone: {brand_kit.tone}\n"
+        f"Brand voice: {voice}\n\n"
+        f"Channels to prepare profiles for: {', '.join(channel_types)}\n\n"
+        "For each channel, produce a suitable account handle, a short bio, and a longer profile "
+        "'about' description — on-brand for the voice and idiomatic to that platform. Return "
+        "exactly one profile per requested channel, echoing its type."
+    )
+    response = client.messages.parse(
+        model=CHANNEL_MODEL,
+        max_tokens=CHANNEL_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a social brand manager. From a product and its brand kit, write "
+            "platform-native profile copy for each requested channel. Handles must be plausible "
+            "usernames; keep bios concise. Return one profile per channel, no more, no less."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=ChannelProfiles,
+    )
+    # adaptive thinking may emit a thinking block first — scan for the text block with the object.
+    profiles = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if profiles is None:  # refusal or unparsable — surface, don't persist empty profiles
+        raise RuntimeError(
+            f"channel profile generation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(CHANNEL_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return profiles, cost
 
 
 def recommend_pricing(

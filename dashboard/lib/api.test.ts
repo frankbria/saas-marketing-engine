@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   apiFetch,
   approveStrategy,
+  connectChannel,
+  getSetupChecklist,
   getStrategy,
+  listChannels,
+  setChecklistItemStatus,
+  triggerChannelSetup,
   updateProduct,
   updateStrategy,
 } from "./api"
@@ -77,5 +82,45 @@ describe("strategy review (S1.4)", () => {
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toContain("/api/private/strategy/7/approve")
     expect(init?.method).toBe("POST")
+  })
+})
+
+describe("channels + setup checklist (S2.6)", () => {
+  it("triggerChannelSetup POSTs the setup endpoint", async () => {
+    const fetchMock = mockFetch({ job_id: 1, status: "queued" })
+    await triggerChannelSetup(7)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/channels/7/setup")
+    expect(init?.method).toBe("POST")
+  })
+
+  it("listChannels GETs the channels endpoint", async () => {
+    const fetchMock = mockFetch([])
+    await listChannels(7)
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/private/channels/7")
+  })
+
+  it("getSetupChecklist GETs the checklist endpoint", async () => {
+    const fetchMock = mockFetch([])
+    await getSetupChecklist(7)
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/private/channels/7/checklist")
+  })
+
+  it("connectChannel POSTs the token to the connect endpoint", async () => {
+    const fetchMock = mockFetch({ connect_state: "connected" })
+    await connectChannel(7, 3, { access_token: "tok" })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/channels/7/3/connect")
+    expect(init?.method).toBe("POST")
+    expect(init?.body).toBe(JSON.stringify({ access_token: "tok" }))
+  })
+
+  it("setChecklistItemStatus PATCHes the item", async () => {
+    const fetchMock = mockFetch({ status: "done" })
+    await setChecklistItemStatus(7, 9, "done")
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/channels/7/checklist/9")
+    expect(init?.method).toBe("PATCH")
+    expect(init?.body).toBe(JSON.stringify({ status: "done" }))
   })
 })

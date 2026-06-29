@@ -3,11 +3,16 @@ import { notFound } from "next/navigation"
 
 import {
   getProduct,
+  getSetupChecklist,
   getStrategy,
+  listChannels,
+  type Channel,
   type Product,
+  type SetupChecklistItem,
   type StrategyBrief,
 } from "@/lib/api"
 
+import { ChannelSetup } from "./channel-setup"
 import { StrategyReview } from "./strategy-review"
 
 export const dynamic = "force-dynamic"
@@ -36,6 +41,19 @@ export default async function ProductDetailPage({
     brief = null
   }
 
+  // Channels + setup checklist exist once S2.6 setup has run; empty until then.
+  let channels: Channel[] = []
+  let checklist: SetupChecklistItem[] = []
+  try {
+    ;[channels, checklist] = await Promise.all([
+      listChannels(productId),
+      getSetupChecklist(productId),
+    ])
+  } catch {
+    channels = []
+    checklist = []
+  }
+
   return (
     <div className="mx-auto flex min-h-svh w-full max-w-3xl flex-col gap-6 p-6">
       <div className="flex items-center justify-between">
@@ -58,6 +76,12 @@ export default async function ProductDetailPage({
           No strategy brief yet. Generate it before reviewing.
         </p>
       )}
+
+      <ChannelSetup
+        productId={productId}
+        channels={channels}
+        checklist={checklist}
+      />
     </div>
   )
 }

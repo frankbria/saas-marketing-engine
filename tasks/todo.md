@@ -1,5 +1,43 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.6 — Channel accounts + human setup checklist + OAuth connect (#14)
+Self-authored plan (issue had only ACs, no plan comment). No architectural fork — token-ingestion
+connect endpoint is the safe default (full per-provider authorize/callback deferred; untestable
+without real provider apps, and S4.8 owns refresh). Mirrors the S2.x setup-handler pattern. TDD.
+
+Acceptance criteria (issue #14):
+- [ ] Per enabled channel: generated handles/bios/profile copy from `brand_json`
+- [ ] Ordered human checklist: CAPTCHA acct, OAuth consent, ToS, DNS, SPF/DKIM/DMARC, Stripe/banking
+- [ ] Warm-up note before any links are posted
+- [ ] OAuth connect flows store tokens in the vault; `channel.connect_state` tracked
+- [ ] Checklist completion tracked in dashboard
+
+Design (autonomous, no fork):
+- **`channel` table** (TECH_SPEC §4): type(blog|reddit|x|instagram|youtube), enabled, autonomous
+  (v1 blog/reddit true), account_ref, connect_state(pending|connected|failed), daily_cap, paused.
+  `profile_json` folds {handle, bio, profile_copy, warmup_note} (v1 folded-JSON pattern). Unique
+  (product_id, type) → idempotent re-runs.
+- **`setup_checklist_item` table** — distinct from `qa_checklist_item` (§3 QA pass/fail): setup is
+  human done/pending. Fields: product_id, channel_id?, ord, instruction, category, status, updated_at.
+- **AI**: one Opus call `generate_channel_profiles` → handles/bios/profile copy only. Warm-up note is
+  deterministic (templated per new account). Budget-reserve + inject pattern (mirrors brand/site).
+- **Checklist emission**: fully deterministic (no tokens) — global items (account/CAPTCHA, DNS,
+  SPF/DKIM/DMARC, Stripe/banking) + per-channel (account creation, OAuth consent, ToS). Idempotent.
+- **OAuth connect**: `POST /channels/{pid}/{cid}/connect` writes token via `vault.put_credential`
+  (channel-scoped), sets `connect_state=connected`. Known limitation: per-provider authorize/callback
+  redirect deferred — dashboard runs each platform's own OAuth and posts the token here.
+
+Steps (TDD):
+1. [ ] `models/channel.py` + `models/setup_checklist_item.py`; register in `models/__init__.py`.
+2. [ ] `ai/client.py`: ChannelProfile/ChannelProfiles + `generate_channel_profiles` + consts.
+3. [ ] `modules/setup/channels.py`: `setup_channels` handler (upsert channels from brief plan, fold
+   profile_json+warmup, emit deterministic checklist, budget gate, no inner commit). Import in main.py.
+4. [ ] `api/private/channels.py`: POST /{pid}/setup · GET /{pid} · GET /{pid}/checklist ·
+   POST /{pid}/{cid}/connect · PATCH /{pid}/checklist/{item_id}. Register in private `__init__`.
+5. [ ] dashboard: `lib/api.ts` types+fns; `app/products/[id]/channel-setup.tsx`; mount in page.tsx.
+6. [ ] tests: test_channel_model, test_channels_setup, test_channels_api; extend lib/api.test.ts.
+7. [ ] ruff + black.
+
 ## S2.5 — Attribution chain (UTM → lead → Stripe → webhook) (#13)
 Self-authored plan (issue had only ACs, no plan comment). No architectural fork.
 
