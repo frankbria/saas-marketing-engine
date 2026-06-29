@@ -1,20 +1,30 @@
-"""Public Stripe webhook (S2.2): receive + verify only.
+"""Public Stripe webhook: receive + verify (S2.2), then join to attribution (S2.5).
 
 Verifies Stripe's signature with stdlib HMAC-SHA256 (the documented `t=…,v1=…`
-scheme) plus a timestamp tolerance to blunt replay. No `stripe` SDK dependency — S2.2
-only needs to accept and authenticate the call. Event handling (checkout.session
-.completed → attribution/metric_event) lands in S2.5.
+scheme) plus a timestamp tolerance to blunt replay. No `stripe` SDK dependency — the
+signature-verified body is parsed as plain JSON. On `checkout.session.completed`, the
+`client_reference_id` (the funnel's first-touch token) is joined back to the lead row →
+`metric_event(stage=paid)`, closing the attribution chain (TECH_SPEC §6.6).
 """
 
 import hashlib
 import hmac
+import json
 import time
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select
 
 from app.config import settings
+from app.db import get_session
+from app.models.funnel_event import FunnelEvent, FunnelEventType
+from app.models.metric_event import MetricEvent, MetricStage
 
 router = APIRouter(prefix="/stripe", tags=["stripe"])
+
+SessionDep = Annotated[Session, Depends(get_session)]
 
 # Stripe's default replay window. Reject signatures whose timestamp is further off than this.
 _TOLERANCE_SECONDS = 300
@@ -50,8 +60,61 @@ def verify_signature(payload: bytes, header: str | None, secret: str, *, now: in
     return any(hmac.compare_digest(expected, sig) for sig in signatures)
 
 
+def _attribute_paid_metric(event: dict, session: Session) -> None:
+    """Join a `checkout.session.completed` event to its lead → write `metric_event(stage=paid)`.
+
+    Attribution is `client_reference_id` (first-touch token) → lead `FunnelEvent` → `product_id`,
+    falling back to the checkout's `metadata.product_id` when the cookie/lead is missing. An
+    unattributable session is acknowledged but records nothing — never fail the webhook back to
+    Stripe. Idempotent on the checkout session id (Stripe redelivers events).
+    """
+    obj = event.get("data", {}).get("object", {})
+    token = obj.get("client_reference_id")
+    metadata = obj.get("metadata") or {}
+    session_id = obj.get("id")
+    source = f"stripe:{session_id}" if session_id else "stripe"
+
+    # Idempotency fast-path: a redelivered session must not double-count revenue. The unique
+    # constraint on `source` is the race-proof backstop (handled at the insert below).
+    if session.exec(select(MetricEvent).where(MetricEvent.source == source)).first():
+        return
+
+    product_id: int | None = None
+    if token:
+        lead = session.exec(
+            select(FunnelEvent).where(
+                FunnelEvent.first_touch_token == token,
+                FunnelEvent.event_type == FunnelEventType.LEAD,
+            )
+        ).first()
+        if lead is not None:
+            product_id = lead.product_id
+    if product_id is None:
+        try:
+            product_id = int(metadata.get("product_id"))
+        except (TypeError, ValueError):
+            product_id = None
+    if product_id is None:
+        return  # unattributable — channel/content tables don't exist yet (S4.x) to fall further
+
+    session.add(
+        MetricEvent(
+            product_id=product_id,
+            stage=MetricStage.PAID,
+            value=int(obj.get("amount_total") or 0),
+            source=source,
+        )
+    )
+    try:
+        session.commit()
+    except IntegrityError:
+        # A concurrent redelivery won the race and already recorded this session — that's the
+        # idempotent outcome we want, not an error.
+        session.rollback()
+
+
 @router.post("/webhook")
-async def stripe_webhook(request: Request) -> dict[str, bool]:
+async def stripe_webhook(request: Request, session: SessionDep) -> dict[str, bool]:
     if settings.stripe_webhook_secret is None:
         # Fail loudly rather than silently accept an unauthenticated webhook.
         raise HTTPException(status_code=503, detail="stripe webhook not configured")
@@ -62,5 +125,7 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
     if not verify_signature(payload, header, secret, now=int(time.time())):
         raise HTTPException(status_code=400, detail="invalid signature")
 
-    # ponytail: receipt only in S2.2. S2.5 parses the event and joins it to a lead.
+    event = json.loads(payload)  # body is signature-verified above
+    if event.get("type") == "checkout.session.completed":
+        _attribute_paid_metric(event, session)
     return {"received": True}
