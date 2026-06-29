@@ -28,8 +28,9 @@ _MANIFESTS = {
     "setup.py",
     "pipfile",
 }
-# Dirs never worth reading for marketing signal.
-_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__", ".next"}
+# Dirs never worth reading for marketing signal. Any dot-directory (.git, .venv, .pytest_cache,
+# .mypy_cache, .next, …) is skipped via the startswith('.') check in collect_signal_files.
+_SKIP_DIRS = {"node_modules", "venv", "dist", "build", "__pycache__"}
 # Source extensions we sample for route/endpoint names + UI copy.
 _SOURCE_EXTS = {".py", ".ts", ".tsx", ".js", ".jsx"}
 # Path hints that flag a source file as carrying marketing signal: routes/endpoints AND the
@@ -123,7 +124,8 @@ def collect_signal_files(repo: Path) -> list[tuple[str, str]]:
             continue
         if not _within(repo_root, path):
             continue
-        if any(part in _SKIP_DIRS for part in path.relative_to(repo).parts):
+        parts = path.relative_to(repo).parts
+        if any(part in _SKIP_DIRS or part.startswith(".") for part in parts):
             continue
         if _candidate(repo, path):
             found.append(path)

@@ -112,6 +112,14 @@ def test_collect_signal_files_picks_signal_skips_noise(tmp_path):
     assert not any(r.endswith("helpers.py") for r in rels)  # non-signal source skipped
 
 
+def test_collect_signal_files_skips_dot_directories(tmp_path):
+    (tmp_path / "README.md").write_text("real")
+    (tmp_path / ".pytest_cache").mkdir()
+    (tmp_path / ".pytest_cache" / "README.md").write_text("cache noise")
+    rels = [r for r, _ in ingest.collect_signal_files(tmp_path)]
+    assert rels == ["README.md"]  # dot-dir cache README excluded
+
+
 def test_collect_signal_files_excludes_symlinks_escaping_repo(tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("host secret")
