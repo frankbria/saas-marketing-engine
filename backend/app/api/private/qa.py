@@ -35,6 +35,14 @@ def run_smoke(product_id: int, session: SessionDep) -> SmokeTestResult:
         )
 
     result = run_smoke_test(product)
+    # The gate was checked before the (synchronous) run; re-check after so two overlapping POSTs
+    # can't both start from setup_done and have the slower one overwrite the verdict.
+    session.refresh(product)
+    if product.lifecycle_state != LifecycleState.SETUP_DONE:
+        raise HTTPException(
+            status_code=409,
+            detail="product state changed while the smoke test ran; retry from the latest state",
+        )
     product.smoke_test_json = result.model_dump_json()
     product.updated_at = datetime.now(UTC)
     if result.passed:

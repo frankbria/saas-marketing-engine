@@ -69,6 +69,11 @@ def _stub_kit() -> BrandKit:
     )
 
 
+def _smoke_json(engine, product_id: int) -> str | None:
+    with Session(engine) as s:
+        return s.get(Product, product_id).smoke_test_json
+
+
 def _seed(
     engine,
     *,
@@ -169,6 +174,28 @@ def test_missing_stripe_price_fails_checkout_keeps_setup_done(ctx):
     assert body["passed"] is False
     stages = {s["stage"]: s["ok"] for s in body["stages"]}
     assert stages["checkout"] is False
+    assert _state(engine, product_id) == LifecycleState.SETUP_DONE
+    # The failed verdict is still persisted for the dashboard, and the synthetic visit/signup
+    # traffic this case drives before aborting at checkout must not leak into the real tables.
+    assert _smoke_json(engine, product_id) is not None
+    assert _real_funnel_rows(engine) == (0, 0)
+
+
+def test_missing_price_amount_fails_paid_keeps_setup_done(ctx):
+    # Stripe price configured (checkout passes) but no price_amount_cents → paid can't verify a
+    # correct amount; it must fail rather than fake a $0 sale.
+    app, engine = ctx
+    product_id = _seed(engine, price=None)
+
+    with TestClient(app) as client:
+        resp = client.post(f"/api/private/qa/{product_id}/smoke-test")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    stages = {s["stage"]: s["ok"] for s in body["stages"]}
+    assert stages["checkout"] is True  # earlier stages still pass
+    assert stages["paid"] is False
+    assert body["passed"] is False
     assert _state(engine, product_id) == LifecycleState.SETUP_DONE
 
 

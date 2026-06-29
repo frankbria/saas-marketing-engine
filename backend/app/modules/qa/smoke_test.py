@@ -79,9 +79,21 @@ def run_smoke_test(product: Product) -> SmokeTestResult:
 
     # --- build + impression: assert the real built artifact (no rebuild, no token spend) ---
     index = workspace_path(product.slug) / "site" / "index.html"
-    html = index.read_text(encoding="utf-8") if index.exists() else ""
+    # An unreadable artifact (permissions, deleted between checks, bad UTF-8) is a stage failure,
+    # not a 500 — `run_smoke_test` never raises.
+    html = ""
+    read_error = ""
+    try:
+        if index.exists():
+            html = index.read_text(encoding="utf-8")
+    except OSError as exc:
+        read_error = str(exc)
+    except UnicodeDecodeError:
+        read_error = "built index.html is not valid UTF-8"
 
-    if not index.exists():
+    if read_error:
+        stages.append(StageResult(stage="build", ok=False, detail=f"unreadable site: {read_error}"))
+    elif not index.exists():
         stages.append(StageResult(stage="build", ok=False, detail=f"no built site at {index}"))
     else:
         stages.append(
@@ -93,7 +105,9 @@ def run_smoke_test(product: Product) -> SmokeTestResult:
         )
 
     missing = [hook for hook in _FUNNEL_HOOKS if hook not in html]
-    if not html:
+    if read_error:
+        imp_detail = f"site artifact unreadable: {read_error}"
+    elif not html:
         imp_detail = "no site artifact to inspect"
     elif missing:
         imp_detail = f"missing funnel hooks: {', '.join(missing)}"
@@ -123,7 +137,8 @@ def run_smoke_test(product: Product) -> SmokeTestResult:
             s.refresh(clone)
             slug = clone.slug
             pid = clone.id
-            price = clone.price_amount_cents or 0
+            # None is a failure (no configured price), not a synthetic $0 — see the paid stage.
+            price = clone.price_amount_cents
 
             # visit
             try:
@@ -199,24 +214,30 @@ def run_smoke_test(product: Product) -> SmokeTestResult:
             except Exception as exc:  # noqa: BLE001
                 stages.append(StageResult(stage="checkout", ok=False, detail=str(exc)))
 
-            # paid — the attribution webhook closes the chain at the test price
-            try:
-                _attribute_paid_metric(_completed_event(_TOKEN, pid, price), s)
-                rows = s.exec(
-                    select(MetricEvent).where(MetricEvent.stage == MetricStage.PAID)
-                ).all()
-                ok = len(rows) == 1 and rows[0].product_id == pid and rows[0].value == price
-                if len(rows) != 1:
-                    detail = f"{len(rows)} paid metric rows"
-                elif rows[0].product_id != pid:
-                    detail = f"paid metric attributed to {rows[0].product_id}, not {pid}"
-                elif rows[0].value != price:
-                    detail = f"paid value {rows[0].value} != test price {price}"
-                else:
-                    detail = ""
-                stages.append(StageResult(stage="paid", ok=ok, detail=detail))
-            except Exception as exc:  # noqa: BLE001
-                stages.append(StageResult(stage="paid", ok=False, detail=str(exc)))
+            # paid — the attribution webhook closes the chain at the test price. A product with no
+            # configured price can't have a "correct" paid amount — fail rather than fake a $0 sale.
+            if price is None:
+                stages.append(
+                    StageResult(stage="paid", ok=False, detail="product has no price_amount_cents")
+                )
+            else:
+                try:
+                    _attribute_paid_metric(_completed_event(_TOKEN, pid, price), s)
+                    rows = s.exec(
+                        select(MetricEvent).where(MetricEvent.stage == MetricStage.PAID)
+                    ).all()
+                    ok = len(rows) == 1 and rows[0].product_id == pid and rows[0].value == price
+                    if len(rows) != 1:
+                        detail = f"{len(rows)} paid metric rows"
+                    elif rows[0].product_id != pid:
+                        detail = f"paid metric attributed to {rows[0].product_id}, not {pid}"
+                    elif rows[0].value != price:
+                        detail = f"paid value {rows[0].value} != test price {price}"
+                    else:
+                        detail = ""
+                    stages.append(StageResult(stage="paid", ok=ok, detail=detail))
+                except Exception as exc:  # noqa: BLE001
+                    stages.append(StageResult(stage="paid", ok=False, detail=str(exc)))
     finally:
         engine.dispose()
 
