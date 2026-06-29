@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # SecretStr so it never leaks via Settings repr/model_dump; None in dev until set.
     vault_key: SecretStr | None = None
 
+    # Anthropic API key for the strategy/crank LLM calls — env `SME_ANTHROPIC_API_KEY`.
+    # SecretStr so it never leaks via Settings repr; None in dev until set (calls then fail loudly).
+    anthropic_api_key: SecretStr | None = None
+
     # Dashboard origin(s) allowed to call the private API from the browser (CORS).
     # Comma-separated in the env var; the dashboard runs same-host on a different port.
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3010"]

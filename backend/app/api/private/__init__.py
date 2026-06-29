@@ -5,7 +5,7 @@ Routers for products/strategy/setup/qa/crank/metrics are added in later phases.
 
 from fastapi import APIRouter
 
-from app.api.private import products
+from app.api.private import products, strategy
 
 router = APIRouter()
 
@@ -16,3 +16,4 @@ def private_health() -> dict[str, str]:
 
 
 router.include_router(products.router)
+router.include_router(strategy.router)
