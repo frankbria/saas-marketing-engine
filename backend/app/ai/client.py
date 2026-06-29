@@ -10,8 +10,10 @@ Managed Agents. Each call returns (data, cost_cents) so the worker can sum cost 
 
 from __future__ import annotations
 
+from typing import Literal
+
 import anthropic
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.ai.pricing import cost_cents
 from app.config import settings
@@ -22,6 +24,9 @@ SYNTHESIS_MAX_TOKENS = 8000  # output cap for synthesis (also the budget-reserva
 
 BRAND_MODEL = "claude-opus-4-8"  # brand kit synthesis (S1.2)
 BRAND_MAX_TOKENS = 2000  # output cap for the brand kit (also the budget-reservation ceiling)
+
+PRICING_MODEL = "claude-opus-4-8"  # pricing recommendation (S1.3)
+PRICING_MAX_TOKENS = 1000  # output cap for pricing (also the budget-reservation ceiling)
 
 
 class ICP(BaseModel):
@@ -67,6 +72,17 @@ class BrandKit(BaseModel):
     tone: str  # one-line overall tone
     voice_descriptors: list[VoiceDescriptor]
     visual_seeds: list[str]  # palette / imagery seed cues for the site template (§6)
+
+
+class PricingRecommendation(BaseModel):
+    """A cc_sub price recommendation folded onto product.price_* (TECH_SPEC §5 step 4 / S1.3).
+
+    `price_interval` is constrained to the two intervals Stripe setup (S2.3) supports; the product
+    column stays a plain string so future intervals don't need a schema change. Amount is in cents.
+    """
+
+    price_amount_cents: int = Field(gt=0)  # e.g. 2900 = $29.00
+    price_interval: Literal["month", "year"]
 
 
 def build_client() -> anthropic.Anthropic:
@@ -175,3 +191,46 @@ def generate_brand_kit(
         )
     cost = cost_cents(BRAND_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return kit, cost
+
+
+def recommend_pricing(
+    client: anthropic.Anthropic,
+    product_name: str,
+    description: str | None,
+    positioning: str,
+    icp_segment: str,
+) -> tuple[PricingRecommendation, int]:
+    """Recommend a cc_sub price from the product + Marketing Brief. Returns (rec, cost_cents)."""
+    user = (
+        f"Product: {product_name}\n"
+        f"Owner description: {description or '(none)'}\n"
+        f"Positioning (from the Marketing Brief): {positioning}\n"
+        f"Ideal customer profile: {icp_segment or '(none)'}\n\n"
+        "Recommend a single credit-card-upfront subscription price for this product: the amount in "
+        "US cents and a billing interval (monthly or yearly). Pick a price the target customer "
+        "would plausibly pay for the value delivered."
+    )
+    response = client.messages.parse(
+        model=PRICING_MODEL,
+        max_tokens=PRICING_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a SaaS pricing strategist. From a product and its marketing positioning, "
+            "recommend one concrete cc_sub price grounded in the value delivered and the ideal "
+            "customer's willingness to pay. Return the amount in cents and a billing interval."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=PricingRecommendation,
+    )
+    # Same as the other parse calls: adaptive thinking may emit a thinking block first, so scan for
+    # the text block carrying the validated object rather than indexing [0].
+    rec = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if rec is None:  # refusal or unparsable — surface, don't persist an empty price
+        raise RuntimeError(
+            f"pricing recommendation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(PRICING_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return rec, cost
