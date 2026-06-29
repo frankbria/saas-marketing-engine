@@ -22,3 +22,34 @@ infra/deploy/check-ports.sh        # checks 8010 + 3010
 ```
 
 Exit code is non-zero if either port is taken; the deploy script should abort on that.
+
+## Public funnel surface (S2.2)
+
+One uvicorn process (`:8010`) serves both API surfaces. nginx is what makes the split
+real on the wire: it must expose **only** the public funnel-ingest paths to the internet
+and keep everything else (the private dashboard/operator API) on the allowlisted interface.
+
+Internet-facing paths (and nothing else):
+- `POST /api/funnel/{slug}/visit`
+- `POST /api/funnel/{slug}/lead`
+- `POST /api/stripe/webhook`
+
+Private paths (`/api/private/*`, the Next dashboard `:3010`) stay firewalled — same as today.
+
+Example nginx for the public vhost (landing sites + Stripe):
+
+```nginx
+# public vhost — only the funnel + stripe routes are proxied through
+location ~ ^/api/(funnel/|stripe/webhook$) {
+    proxy_pass http://127.0.0.1:8010;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;   # rate limiter reads the real client IP
+}
+# everything else on this vhost 404s — /api/private is never exposed here.
+location /api/ { return 404; }
+```
+
+App-level defenses behind nginx (do not rely on nginx alone): per-(slug, IP) rate limiting,
+strict request validation, per-product CORS scoped to each product's `marketing_domain`, and
+stdlib HMAC verification of the Stripe signature. The private surface keeps its deploy-time
+firewall — there is no auth in v1.

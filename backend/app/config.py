@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     worker_interval_seconds: int = 5
     heartbeat_interval_seconds: int = 60
 
+    # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
+    # In-process counter — adequate for the single-process v1 VPS.
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
+
+    # Stripe webhook signing secret (`whsec_…`) — env `SME_STRIPE_WEBHOOK_SECRET`.
+    # SecretStr so it never leaks via Settings repr; None until configured (webhook then rejects).
+    stripe_webhook_secret: SecretStr | None = None
+
     # v1 VPS ports (verified free — see infra/deploy/PORTS.md). SQLite is a file, no port.
     api_port: int = 8010
     dashboard_port: int = 3010
