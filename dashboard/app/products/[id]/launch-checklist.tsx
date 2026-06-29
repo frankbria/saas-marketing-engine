@@ -13,7 +13,10 @@ import {
 function parseResult(json: string | null): LaunchChecklistResult | null {
   if (!json) return null
   try {
-    return JSON.parse(json) as LaunchChecklistResult
+    const parsed = JSON.parse(json) as LaunchChecklistResult
+    // Guard against drifted/malformed payloads — without this a bad shape throws in items.map().
+    if (!Array.isArray(parsed?.items)) return null
+    return parsed
   } catch {
     return null
   }

@@ -140,9 +140,12 @@ def test_pass_records_verdict_without_crossing_gate_or_polluting_real_metrics(ct
     # A pass records the verdict but does NOT cross the gate on its own — emitting the launch
     # checklist (S2.8) is what advances setup_done → qa.
     assert _state(engine, product_id) == LifecycleState.SETUP_DONE
-    # Result folded onto the product for the dashboard.
+    # Result folded onto the product for the dashboard — but the smoke test must NOT emit a launch
+    # checklist (that's S2.8's job); this locks in the record-only contract.
     with Session(engine) as s:
-        assert s.get(Product, product_id).smoke_test_json is not None
+        product = s.get(Product, product_id)
+        assert product.smoke_test_json is not None
+        assert product.launch_checklist_json is None
     # Synthetic traffic stayed in the throwaway DB — real funnel/revenue tables untouched.
     assert _real_funnel_rows(engine) == (0, 0)
 

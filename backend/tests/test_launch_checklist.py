@@ -129,12 +129,19 @@ def test_emit_advances_to_qa_and_stores_checklist(ctx):
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["items"], "checklist must have items derived from setup state"
-    labels = {i["label"] for i in body["items"]}
-    # Checklist is built from real setup output, not a static template.
-    assert any("smoke" in label.lower() for label in labels)
-    assert any("channel" in label.lower() for label in labels)
-    assert all({"ord", "label", "detail", "ready"} <= i.keys() for i in body["items"])
+    items = body["items"]
+    assert all({"ord", "label", "detail", "ready"} <= i.keys() for i in items)
+    # S2.8's contract is a deterministic, ordered six-item checklist — pin count + order, not just a
+    # loose set, so a dropped/duplicated/reordered item is caught.
+    assert [i["ord"] for i in items] == [1, 2, 3, 4, 5, 6]
+    assert [i["label"] for i in items[:5]] == [
+        "Site built & deployed",
+        "Funnel contract wired (impression→visit→signup→checkout→paid)",
+        "Stripe test-mode checkout configured",
+        "Pre-QA smoke test passed",
+        "Channels prepared",
+    ]
+    assert items[5]["label"].startswith("Human setup steps complete")
 
     # Gate crossed.
     assert _state(engine, product_id) == LifecycleState.QA
@@ -184,13 +191,20 @@ def test_smoke_not_run_blocks_gate(ctx):
     assert _state(engine, product_id) == LifecycleState.SETUP_DONE
 
 
-def test_corrupt_smoke_json_blocks_gate(ctx):
-    # A non-null but unreadable stored smoke verdict must 409, not 500.
+@pytest.mark.parametrize(
+    "bad_json",
+    [
+        "{not valid json",  # malformed syntax
+        '{"passed": true}',  # schema-valid JSON but missing required SmokeTestResult fields
+    ],
+)
+def test_unreadable_smoke_json_blocks_gate(ctx, bad_json):
+    # A non-null but unreadable/invalid stored smoke verdict must 409, not 500.
     app, engine = ctx
     product_id = _seed(engine)
     with Session(engine) as s:
         product = s.get(Product, product_id)
-        product.smoke_test_json = "{not valid json"
+        product.smoke_test_json = bad_json
         s.add(product)
         s.commit()
 

@@ -87,8 +87,13 @@ def emit_launch_checklist(
         )
     )
 
+    # Order both reads explicitly: their values are serialized into `detail`, so implicit row order
+    # would let identical setup state emit different checklist JSON (breaking the deterministic
+    # contract).
     channels = session.exec(
-        select(Channel).where(Channel.product_id == product.id, Channel.enabled)
+        select(Channel)
+        .where(Channel.product_id == product.id, Channel.enabled)
+        .order_by(Channel.type)
     ).all()
     items.append(
         LaunchChecklistItem(
@@ -100,7 +105,9 @@ def emit_launch_checklist(
     )
 
     setup_items = session.exec(
-        select(SetupChecklistItem).where(SetupChecklistItem.product_id == product.id)
+        select(SetupChecklistItem)
+        .where(SetupChecklistItem.product_id == product.id)
+        .order_by(SetupChecklistItem.ord)
     ).all()
     pending = [i for i in setup_items if i.status != SetupItemStatus.DONE]
     done = len(setup_items) - len(pending)
