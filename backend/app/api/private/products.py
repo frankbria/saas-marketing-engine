@@ -113,8 +113,19 @@ def update_product(product_id: int, payload: ProductUpdate, session: SessionDep)
     product = session.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="product not found")
+    prev_amount, prev_interval = product.price_amount_cents, product.price_interval
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(product, field, value)
+    # Keep the invariant "stripe_price_id is set ⟹ product is a priced cc_sub" (S2.3). Clear it only
+    # on a *real* change: a different price (the old Stripe Price is stale — Prices are immutable, a
+    # change means a new one) or the model moving off cc_sub (Checkout must not bill a now-trial/
+    # freemium product). Compare to the pre-edit values so a no-op full-form resubmit (dashboards
+    # often POST the whole object) doesn't needlessly disable checkout. Next stripe setup recreates.
+    price_changed = (
+        product.price_amount_cents != prev_amount or product.price_interval != prev_interval
+    )
+    if price_changed or product.monetization_model != MonetizationModel.CC_SUB:
+        product.stripe_price_id = None
     product.updated_at = datetime.now(UTC)
     session.add(product)
     session.commit()

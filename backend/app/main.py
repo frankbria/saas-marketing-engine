@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
 import app.modules.setup.site  # noqa: F401 — registers the setup_site job handler
+import app.modules.setup.stripe_setup  # noqa: F401 — registers the stripe_setup job handler
 import app.modules.strategy.brand  # noqa: F401 — registers the brand_kit job handler
 import app.modules.strategy.brief  # noqa: F401 — registers the strategy_brief job handler
 import app.modules.strategy.pricing  # noqa: F401 — registers the pricing job handler

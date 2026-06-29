@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # SecretStr so it never leaks via Settings repr; None until configured (webhook then rejects).
     stripe_webhook_secret: SecretStr | None = None
 
+    # Stripe secret API key (`sk_test_…` / `sk_live_…`) — env `SME_STRIPE_API_KEY`. Used to create
+    # the product/price (S2.3 setup) and Checkout sessions. SecretStr so it never leaks via repr;
+    # None until configured (Stripe setup + checkout then fail loudly).
+    stripe_api_key: SecretStr | None = None
+
     # v1 VPS ports (verified free — see infra/deploy/PORTS.md). SQLite is a file, no port.
     api_port: int = 8010
     dashboard_port: int = 3010
