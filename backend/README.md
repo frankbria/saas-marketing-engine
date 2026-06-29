@@ -52,6 +52,22 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   that scrubs every vault secret from all logs; `tests/test_no_plaintext_logging.py` is the
   static backstop. Single global key for v1 (per-product keys deferred — §9).
 
+### Strategy brief (S1.1)
+
+- `models/strategy_brief.py` — `StrategyBrief` (1:1 product, TECH_SPEC §4/§5): ICP, pain
+  points, positioning, channel plan, content pillars, cadence, `raw_ai_output`.
+- `modules/strategy/ingest.py` — bounded repo ingest (README/manifests/docs + route & UI/copy
+  source; dot-dirs and symlink escapes excluded). Local clone preferred; `repo_url` is
+  re-cloned fresh each run.
+- `ai/client.py` + `ai/pricing.py` — Anthropic SDK: Haiku per-file summaries, Opus 4.8
+  synthesis via structured outputs; per-call cost in cents. Needs env **`SME_ANTHROPIC_API_KEY`**
+  (a `SecretStr`).
+- `modules/strategy/brief.py` — `@handler("strategy_brief")`: budget-gated (pre-check +
+  mid-loop cap + synthesis reservation vs `token_budget_cents_month`, `0`=unlimited) ingest →
+  summarize → synthesize → upsert brief → product → `strategy`. Cost is recorded to `job_run`.
+- `api/private/strategy.py` — `POST /api/private/strategy/{product_id}/brief` enqueues the job
+  (202). The real-API integration test is gated on `SME_ANTHROPIC_API_KEY`.
+
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
 No Celery/Redis/Postgres in v1 (Phase B).

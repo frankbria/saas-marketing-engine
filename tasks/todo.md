@@ -20,6 +20,43 @@ Steps (TDD) — all done. 40 tests pass; ruff+black clean.
 
 Review fixes: codex P2 (channel scoping); CodeRabbit (SecretStr key, locked longest-first redaction, broadened lint terms, runtime test key).
 
+## S1.1 — Codebase ingest → Marketing Brief (#5, branch feat/s1.1-strategy-brief)
+Self-authored plan (no plan comment on issue). Adapts TECH_SPEC §4/§5 onto the S0.2 worker
+loop + S0.3 product registry. No architectural fork — see deviation on SDK choice below. TDD.
+
+Acceptance criteria (issue #5):
+- [x] Ingest README, manifests, `docs/`, route/endpoint names, UI copy; summarize per-file then synthesize (no whole-repo dump)
+- [x] Claude call → `strategy_brief` (ICP, pain points, positioning, channel plan, content pillars, cadence)
+- [x] Token cost recorded to `job_run`; checked against `product.token_budget_cents_month` (pre-check + mid-loop cap + synthesis reservation)
+- [x] `raw_ai_output` stored for debugging
+- [~] Integration test on a real repo: non-empty ICP + ≥3 content pillars — written, key-gated (skipped without `SME_ANTHROPIC_API_KEY`; run by the operator)
+
+Steps (TDD) — all done. 61 backend tests pass (1 key-gated integration skipped); ruff+black clean.
+1. [x] `app/models/strategy_brief.py` + register in models `__init__`.
+2. [x] config: `anthropic_api_key: SecretStr | None`.
+3. [x] `app/ai/pricing.py`: `cost_cents` (ceil → never under-bill).
+4. [x] `app/ai/client.py`: `summarize_file` (haiku) + `synthesize_brief` (opus-4-8, structured output via `messages.parse`; parsed_output on the text block).
+5. [x] `app/modules/strategy/ingest.py`: resolve repo (always re-clone fresh — no stale cache), bounded signal files incl. UI/component source; symlink-escape guarded.
+6. [x] `app/modules/strategy/brief.py` + `@handler("strategy_brief")`: budget pre-check + mid-loop cap + synthesis reservation → ingest → summaries → synthesize → upsert → STRATEGY. No handler commit (worker commits atomically with job status+cost).
+7. [x] `app/api/private/strategy.py`: `POST /strategy/{product_id}/brief` → 202; wired into private `__init__`.
+8. [x] tests: pricing, ingest (incl. symlink + UI), budget (pre-check/cap/reservation/threading), persistence+upsert, worker records cost, route 202/404/400, key-gated integration.
+9. [x] `uv add anthropic==0.112.0`. (Skipped a new `.env.example` — no existing convention; the config docstring documents `SME_ANTHROPIC_API_KEY`. YAGNI.)
+
+Codex cross-family review fixes (all addressed): budget overshoot (synthesis reservation + mid-loop cap), handler/worker commit atomicity (no early commit), stale clone (always re-clone), symlink traversal during ingest (resolve-and-contain), UI copy omitted from ingest (broadened signal hints).
+
+Known limitation (documented, deferred): the `strategy_brief` job is costly + non-idempotent on the
+S0.2 retry-rollback worker — a mid-run failure (e.g. a transient API error, or summary spend that
+crosses a tiny remaining budget) doesn't record its partial spend and can re-spend on retry (≤3×,
+bounded to the cheap summary phase since the reservation blocks the expensive synthesis). A proper
+fix (incremental cost ledger / resumable jobs) belongs to the shared worker, not S1.1.
+
+Deviations / assumptions:
+- **Anthropic SDK, not Managed Agents / "Claude Agent SDK".** S1.1 is one deterministic ingest→summarize→synthesize pipeline our code orchestrates, not an open-ended agent loop. Single structured generation → Messages API w/ structured outputs is the simplest correct surface (per claude-api guidance). Safe default, not a fork.
+- Model tiers (§9): `claude-opus-4-8` synthesis, `claude-haiku-4-5` per-file bulk.
+- `token_budget_cents_month == 0` = unlimited/unset (onboarding default) → does not block.
+- No-mock rule: real API used in the key-gated integration test; worker wiring + persistence tested via an injected stub generator (a seam, not a network mock). DB tests use real SQLite.
+- S1.1 produces only `strategy_brief`; brand kit (S1.2) + pricing (S1.3) are later stories.
+
 ## Phase: Discovery → PRD → Spec (current)
 - [x] Read BRAINSTORM.md transcript
 - [x] Run structured brainstorm (3 decision rounds)
