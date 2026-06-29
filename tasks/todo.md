@@ -1,5 +1,32 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.1 — Templated landing site + funnel contract + UTM (#9, branch feat/s2.1-templated-landing-site)
+Self-authored plan (no plan comment on issue). No architectural fork — **clear safe default**:
+`site-template/` = one self-contained Jinja2 HTML file rendered by the Python engine (§6.1 "the
+engine builds each site") → static `index.html` → deployed to an nginx web root keyed by
+`marketing_domain`. NOT a second Next.js app (a landing page is static; the four contract pieces
+are ~40 lines of vanilla JS). Jinja2 (new dep) justified: autoescaping AI/user copy into a public
+page is a trust-boundary XSS guard. Mirrors the S1.2 brand handler pattern. TDD.
+
+Acceptance criteria (issue #9):
+- [ ] `site-template/` with contract components: `<EmailCapture>`, `<StripeCheckout>`, `<AnalyticsSnippet>`, UTM capture (first-touch cookie)
+- [ ] AI fills copy slots + brand tokens (palette/font/voice from `brand_json`); layout/plumbing constant
+- [ ] Static export + deploy to nginx under `product.marketing_domain`
+- [ ] All four funnel events fire (verified by S2.7)
+
+Steps (TDD: test first):
+1. [ ] `site-template/index.html.j2`: constant layout + plumbing — UTM→first-touch cookie; `visit` beacon on load; `<EmailCapture>` form→`lead`; `<StripeCheckout>` button→`/checkout` carrying `client_reference_id=token`; copy slots + brand CSS-var tokens. Autoescaped.
+2. [ ] `ai/client.py`: `SiteContent` (copy slots + concrete design tokens: primary/accent color, font) + `SITE_MODEL`/`SITE_MAX_TOKENS` + `generate_site_content(...)` (opus-4-8, already priced; same parsed_output scan as brand).
+3. [ ] `config.py`: `public_api_base_url`, `nginx_sites_root`.
+4. [ ] `modules/setup/site.py` (mirrors `brand.py`): `render_site` (pure, Jinja2) · `build_site`→workspace `{slug}/site/` (static export) · `deploy_site`→`{nginx_sites_root}/{domain}/`+vhost · `_real_generate` (budget reserve) · `build_product_site` + `@handler("setup_site")`.
+5. [ ] `api/private/setup.py`: `POST /setup/{id}/site` → 202; 404 missing, 409 not `setup_ready`, 400 no brand_json. Wire into private `__init__`; import handler in `main.py`.
+6. [ ] `pyproject.toml`: `jinja2`.
+7. [ ] `tests/test_site_template.py` (mirrors `test_brand_kit.py`): render contract assertions (4 components + tokens + autoescape) · build/deploy filesystem · budget gate · worker path · route 202/404/409/400 · key-gated real-API integration.
+
+Ponytail boundaries (marked in code):
+- Deploy = local FS place + vhost emit; `nginx -s reload`/scp/TLS are operational (S2.7/S6.4 exercise live).
+- `/checkout` endpoint + real Stripe session = S2.3; S2.1 wires the call carrying the token. Demoable events: `visit`+`signup`.
+
 ## S2.2 — Public funnel-ingest API (split from private) (#10, branch feature/issue-10-public-funnel-ingest)
 Self-authored plan (no plan comment; only a CodeRabbit placeholder). No architectural fork.
 
