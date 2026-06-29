@@ -7,10 +7,10 @@ asynchronously (ingest + LLM can take a while). Returns 202 + the job id to poll
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import Product
+from app.models import Product, StrategyBrief
 from app.worker import enqueue
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
@@ -26,4 +26,18 @@ def trigger_strategy_brief(product_id: int, session: SessionDep) -> dict:
     if not (product.repo_local_path or product.repo_url):
         raise HTTPException(status_code=400, detail="product has no repo to ingest")
     job = enqueue(session, "strategy_brief", product_id=product_id)
+    return {"job_id": job.id, "status": job.status}
+
+
+@router.post("/{product_id}/brand", status_code=202)
+def trigger_brand_kit(product_id: int, session: SessionDep) -> dict:
+    product = session.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    brief = session.exec(
+        select(StrategyBrief).where(StrategyBrief.product_id == product_id)
+    ).first()
+    if brief is None:
+        raise HTTPException(status_code=400, detail="product has no strategy brief; run it first")
+    job = enqueue(session, "brand_kit", product_id=product_id)
     return {"job_id": job.id, "status": job.status}

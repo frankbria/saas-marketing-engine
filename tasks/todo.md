@@ -1,5 +1,27 @@
 # SaaS Marketing Engine — Working Plan
 
+## S1.2 — Brand Kit generation (`product.brand_json`) (#6, branch feat/s1.2-brand-kit)
+Self-authored plan (no plan comment on issue). No architectural fork — mirrors S1.1
+exactly: single Opus structured-output call, grounded in the existing `strategy_brief`,
+persisted to the already-present `product.brand_json` column, run via the async worker.
+No new table, no new lifecycle state (brand is part of the `strategy` phase). TDD.
+
+Acceptance criteria (issue #6) — all demoed with real-API outcome evidence:
+- [x] Claude call → `product.brand_json` (name, voice descriptors, visual seeds, tone)
+- [x] Voice descriptors **structured** ({descriptor, guidance}) for later reuse by S4.3 (critic) and S4.4 (guard)
+- [x] Persisted on the product (no separate table — demo confirms only product/strategy_brief/job_run/credential tables)
+
+Steps (TDD) — all done. 75 backend tests pass (incl. key-gated brand integration); ruff+black clean.
+1. [x] `app/ai/client.py`: `VoiceDescriptor{descriptor, guidance}` + `BrandKit{name, tone, voice_descriptors, visual_seeds}`; `generate_brand_kit(...)` → `messages.parse` on Opus, returns `(BrandKit, cost_cents)`.
+2. [x] `app/modules/strategy/brand.py` (mirrors `brief.py`): load product + its strategy_brief (grounding) → budget gate (reuse `month_to_date_cost_cents`) + synthesis reserve (all prompt inputs counted) → persist `product.brand_json`, no handler commit. `@handler("brand_kit")`.
+3. [x] `app/api/private/strategy.py`: `POST /strategy/{id}/brand` → 202; 404 missing product, 400 if no brief yet.
+4. [x] `app/main.py`: import brand module to register the handler.
+5. [x] `backend/tests/test_brand_kit.py`: schema/persistence/budget/worker/route + key-gated real-API integration.
+
+Codex cross-family review: P2 reservation completeness (now counts name/description/positioning/pillars + prompt overhead — fixed). P2 untracked spend on a paid-but-unparsed response → same accepted behavior as S1.1 `synthesize_brief`; covered by the shared known limitation below (proper fix = cost ledger on the worker).
+
+Skipped (ponytail): no `brand_kit` table (folded per AC & §177); no separate `raw_ai_output` (brand_json *is* the validated kit); no haiku tier (one synthesis call, not a bulk loop).
+
 ## S0.4 — Encrypted credentials vault (Fernet) (#4, branch feat/s0.4-credentials-vault)
 Self-authored plan (no plan comment). No architectural fork — schema pinned by TECH_SPEC §4,
 crypto/redaction by §9. Single global key for v1 (ponytail: per-product keys deferred). TDD.

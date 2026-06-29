@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
+import app.modules.strategy.brand  # noqa: F401 — registers the brand_kit job handler
 import app.modules.strategy.brief  # noqa: F401 — registers the strategy_brief job handler
 from app.api import private, public
 from app.config import settings

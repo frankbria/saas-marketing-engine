@@ -20,6 +20,9 @@ SUMMARY_MODEL = "claude-haiku-4-5"  # bulk per-file summaries
 SYNTHESIS_MODEL = "claude-opus-4-8"  # strategy synthesis (§9)
 SYNTHESIS_MAX_TOKENS = 8000  # output cap for synthesis (also the budget-reservation ceiling)
 
+BRAND_MODEL = "claude-opus-4-8"  # brand kit synthesis (S1.2)
+BRAND_MAX_TOKENS = 2000  # output cap for the brand kit (also the budget-reservation ceiling)
+
 
 class ICP(BaseModel):
     segment: str
@@ -47,6 +50,23 @@ class BriefDraft(BaseModel):
     channel_plan: list[ChannelPlanItem]
     content_pillars: list[str]
     cadence: Cadence
+
+
+class VoiceDescriptor(BaseModel):
+    """One brand voice trait. `guidance` is concrete enough for S4.3 (critic) and S4.4 (guard)
+    to apply it programmatically — the AC's "structured for later reuse"."""
+
+    descriptor: str  # e.g. "confident", "playful"
+    guidance: str  # how it shows up in copy (what to do / avoid)
+
+
+class BrandKit(BaseModel):
+    """On-brand kit folded onto product.brand_json (TECH_SPEC §5 step 3 / story S1.2)."""
+
+    name: str  # brand / product name
+    tone: str  # one-line overall tone
+    voice_descriptors: list[VoiceDescriptor]
+    visual_seeds: list[str]  # palette / imagery seed cues for the site template (§6)
 
 
 def build_client() -> anthropic.Anthropic:
@@ -112,3 +132,46 @@ def synthesize_brief(
         )
     cost = cost_cents(SYNTHESIS_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return brief, cost
+
+
+def generate_brand_kit(
+    client: anthropic.Anthropic,
+    product_name: str,
+    description: str | None,
+    positioning: str,
+    content_pillars: list[str],
+) -> tuple[BrandKit, int]:
+    """Derive a brand kit from the product + its Marketing Brief. Returns (kit, cost_cents)."""
+    pillars = ", ".join(content_pillars) or "(none)"
+    user = (
+        f"Product: {product_name}\n"
+        f"Owner description: {description or '(none)'}\n"
+        f"Positioning (from the Marketing Brief): {positioning}\n"
+        f"Content pillars: {pillars}\n\n"
+        "Produce a Brand Kit: the brand name, an overall tone, voice descriptors (each with "
+        "concrete guidance for how it shows up in copy), and visual seeds (palette/imagery cues)."
+    )
+    response = client.messages.parse(
+        model=BRAND_MODEL,
+        max_tokens=BRAND_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a brand strategist. From a product and its marketing positioning, derive a "
+            "concrete, on-brand kit. Voice descriptors must be specific and actionable so a "
+            "downstream copy critic and a claim-trace guard can apply them mechanically."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=BrandKit,
+    )
+    # Same as synthesize_brief: adaptive thinking may emit a thinking block first, so scan for the
+    # text block carrying the validated object rather than indexing [0].
+    kit = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if kit is None:  # refusal or unparsable — surface, don't persist an empty kit
+        raise RuntimeError(
+            f"brand kit generation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(BRAND_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return kit, cost
