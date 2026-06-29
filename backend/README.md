@@ -70,9 +70,13 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
 - `modules/strategy/brand.py` — `@handler("brand_kit")`: budget-gated Opus call grounded in the
   product's brief → folds a Brand Kit (name, tone, structured voice descriptors, visual seeds)
   onto `product.brand_json`. No new table, no lifecycle change. Cost recorded to `job_run`.
-- `api/private/strategy.py` — `POST /api/private/strategy/{product_id}/brief` and
-  `POST .../{product_id}/brand` enqueue their jobs (202; `brand` 400s until a brief exists). The
-  real-API integration tests are gated on `SME_ANTHROPIC_API_KEY`.
+- `modules/strategy/pricing.py` — `@handler("pricing")` (S1.3): budget-gated Opus call grounded
+  in the brief → folds a `cc_sub` price (`price_amount_cents` + `price_interval`, month/year) onto
+  the product. Refused for non-`cc_sub` products (trial/freemium unwired in v1). Owner-editable via
+  the products PATCH. No new table, no lifecycle change. Cost recorded to `job_run`.
+- `api/private/strategy.py` — `POST /api/private/strategy/{product_id}/brief`, `.../brand`, and
+  `.../pricing` enqueue their jobs (202; `brand`/`pricing` 400 until a brief exists, `pricing` also
+  400s for non-`cc_sub`). The real-API integration tests are gated on `SME_ANTHROPIC_API_KEY`.
 
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
