@@ -1,5 +1,41 @@
 # SaaS Marketing Engine — Working Plan
 
+## S2.8 — Launch checklist emission (#16)  ← ACTIVE
+Self-authored plan (issue had ACs only, no plan comment). No architectural fork.
+**Branch:** `feat/s2.8-launch-checklist` · Refs USER_STORIES S2.8, TECH_SPEC §6/§6.7, PRD FR-15.
+
+Acceptance criteria (issue #16):
+- [ ] Launch checklist generated from **real setup state**
+- [ ] State transition `setup_done → qa`
+
+**Key decision (spec-driven, not a fork):** TECH_SPEC line 112 defines the gate as
+`setup_done ──(smoke-test pass + checklist emitted)──▶ qa`. S2.7 currently crosses to `qa` on smoke
+pass *alone* — before any checklist exists, crossing the gate prematurely. Fix: **S2.8 owns the gate
+crossing.** The smoke test (S2.7) becomes record-only; emitting the launch checklist (which requires a
+*passed* smoke test) advances `setup_done → qa`. Dictated by the spec → decided autonomously.
+
+The launch checklist is **deterministic** (no LLM/network) — mirrors S2.7's synchronous pattern. It is
+*emitted for the human QA gate to verify*; incomplete human-setup items do **not** block the transition
+(the smoke pass is the hard gate). Stored folded on the product as `launch_checklist_json` (mirrors
+`smoke_test_json`; no new table — `qa_checklist_item` stays reserved for S3.1/S3.2's pass/fail gate).
+
+Steps (TDD RED → GREEN):
+1. Add nullable `launch_checklist_json` to `Product` (mirror `smoke_test_json`).
+2. `app/modules/qa/launch_checklist.py`: `LaunchChecklistItem(ord,label,detail,ready)`,
+   `LaunchChecklist(emitted_at,items)`, `emit_launch_checklist(product, session)` — derives items from
+   real setup output (site built / funnel wired / Stripe test price / smoke passed via `smoke_test_json`;
+   channels prepared via Channel rows; human setup done/pending via SetupChecklistItem rows).
+3. `POST /api/private/qa/{product_id}/launch-checklist`: 404 unknown; 409 not `setup_done`;
+   409 smoke absent/not-passed; emit + store; race-guard re-check; advance `setup_done → qa`; return checklist.
+4. Strip `result.passed → QA` from `run_smoke` (record-only); update S2.7 docstrings (`qa.py`, `smoke_test.py`).
+5. Tests: `tests/test_launch_checklist.py` (emit+transition+store; 409 smoke-not-passed/not-run; 409 wrong
+   state; 404; reflects pending human setup; re-run after qa → 409). Update `tests/test_smoke_test.py`
+   (smoke pass now keeps `setup_done`).
+
+Verify: `uv run pytest` 100%; `uv run ruff check . && uv run black --check .`; demo setup_done→qa with evidence.
+
+---
+
 ## S2.7 — Pre-QA funnel smoke test (#15)
 Self-authored plan (issue had ACs only, no plan comment). No architectural fork.
 

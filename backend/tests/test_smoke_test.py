@@ -118,7 +118,7 @@ def _real_funnel_rows(engine) -> tuple[int, int]:
         )
 
 
-def test_pass_advances_to_qa_without_polluting_real_metrics(ctx):
+def test_pass_records_verdict_without_crossing_gate_or_polluting_real_metrics(ctx):
     app, engine = ctx
     product_id = _seed(engine)
 
@@ -137,8 +137,9 @@ def test_pass_advances_to_qa_without_polluting_real_metrics(ctx):
         "checkout": True,
         "paid": True,
     }
-    # Gate crossed only on a full pass.
-    assert _state(engine, product_id) == LifecycleState.QA
+    # A pass records the verdict but does NOT cross the gate on its own — emitting the launch
+    # checklist (S2.8) is what advances setup_done → qa.
+    assert _state(engine, product_id) == LifecycleState.SETUP_DONE
     # Result folded onto the product for the dashboard.
     with Session(engine) as s:
         assert s.get(Product, product_id).smoke_test_json is not None
