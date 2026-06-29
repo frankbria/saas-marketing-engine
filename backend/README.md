@@ -77,6 +77,15 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
 - `api/private/strategy.py` — `POST /api/private/strategy/{product_id}/brief`, `.../brand`, and
   `.../pricing` enqueue their jobs (202; `brand`/`pricing` 400 until a brief exists, `pricing` also
   400s for non-`cc_sub`). The real-API integration tests are gated on `SME_ANTHROPIC_API_KEY`.
+- `modules/setup/site.py` — `@handler("setup_site")` (S2.1): budget-gated Opus call writes on-brand
+  landing copy + design tokens from `product.brand_json`, renders the one maintained
+  `site-template/index.html.j2` (Jinja2, autoescaped), statically exports it to
+  `{workspace}/{slug}/site/`, and deploys it under `marketing_domain` (`SME_NGINX_SITES_ROOT/{domain}/`
+  + an emitted vhost). The generated site's funnel JS calls the public API at
+  `SME_PUBLIC_API_BASE_URL` — UTM→first-touch cookie, `visit` on load, `lead` on submit, checkout
+  carrying `client_reference_id`. `marketing_domain` is hostname-validated before any filesystem use.
+- `api/private/setup.py` — `POST /api/private/setup/{product_id}/site` enqueues the site build (202;
+  404 missing, 409 unless `setup_ready`, 400 until a brand kit exists).
 
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
