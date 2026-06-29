@@ -37,20 +37,22 @@ export default async function ProductsPage() {
 
       <ul className="flex flex-col gap-2">
         {products.map((p) => (
-          <li
-            key={p.id}
-            className="flex items-center justify-between rounded-md border p-3 text-sm"
-          >
-            <div className="flex flex-col">
-              <span className="font-medium">{p.name}</span>
-              <span className="font-mono text-xs text-muted-foreground">
-                {p.slug}
-                {p.marketing_domain ? ` · ${p.marketing_domain}` : ""}
+          <li key={p.id}>
+            <Link
+              href={`/products/${p.id}`}
+              className="flex items-center justify-between rounded-md border p-3 text-sm transition-colors hover:bg-muted/50"
+            >
+              <div className="flex flex-col">
+                <span className="font-medium">{p.name}</span>
+                <span className="font-mono text-xs text-muted-foreground">
+                  {p.slug}
+                  {p.marketing_domain ? ` · ${p.marketing_domain}` : ""}
+                </span>
+              </div>
+              <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                {p.lifecycle_state}
               </span>
-            </div>
-            <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-              {p.lifecycle_state}
-            </span>
+            </Link>
           </li>
         ))}
       </ul>
