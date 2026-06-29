@@ -3,7 +3,7 @@
 FastAPI backend for the SaaS Marketing Engine. Two API surfaces (TECH_SPEC §1):
 
 - **private** (`/api/private/*`) — dashboard/operator API, firewalled, no auth in v1
-- **public** (`/api/public/*`) — funnel-ingest (visit/lead) + Stripe webhook, internet-facing
+- **public** (`/api/public/*`) — funnel-ingest (visit/lead/checkout) + Stripe webhook, internet-facing
 
 ## Develop
 
@@ -86,6 +86,19 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   carrying `client_reference_id`. `marketing_domain` is hostname-validated before any filesystem use.
 - `api/private/setup.py` — `POST /api/private/setup/{product_id}/site` enqueues the site build (202;
   404 missing, 409 unless `setup_ready`, 400 until a brand kit exists).
+- `integrations/stripe_api.py` (S2.3) — stdlib-only Stripe REST calls (Product, recurring Price,
+  Checkout Session); no `stripe` SDK, no new runtime dep. Needs env **`SME_STRIPE_API_KEY`**
+  (`sk_test_…` in dev); non-2xx raises loudly. ponytail: no Idempotency-Key/retry until live mode.
+- `modules/setup/stripe_setup.py` — `@handler("stripe_setup")` (S2.3): creates the Stripe
+  product+price and folds `stripe_price_id` onto the product. `cc_sub` only, idempotent, interval
+  must be `month`/`year`. Triggered by `POST /api/private/setup/{product_id}/stripe` (202; 404
+  missing, 409 unless `setup_ready`, 400 for non-`cc_sub` / no price / bad interval).
+- `api/public/funnel.py` — `POST /api/funnel/{slug}/checkout` (S2.3) starts a subscription Checkout
+  session passing `client_reference_id` + `metadata[first_touch_token]` for the S2.5 attribution
+  join; requires an attribution token (422 without), 409 until Stripe is configured, returns `{url}`.
+  The products PATCH keeps the invariant *`stripe_price_id` set ⟹ priced `cc_sub`*: a real price
+  change or a switch off `cc_sub` clears it (no-op resubmits preserved). Real-API tests gated on
+  `SME_STRIPE_API_KEY`; `metric_event(stage=paid)` emission is S2.5.
 
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
