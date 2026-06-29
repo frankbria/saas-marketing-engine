@@ -16,6 +16,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from app import worker
 from app.ai import pricing
 from app.ai.client import ICP, BriefDraft, Cadence, ChannelPlanItem
+from app.config import settings
 from app.models import JobStatus, LifecycleState, Product, StrategyBrief
 from app.modules.strategy import brief as brief_mod
 from app.modules.strategy import ingest
@@ -362,7 +363,8 @@ def test_route_400_when_no_repo(session):
 
 
 @pytest.mark.skipif(
-    not os.getenv("SME_ANTHROPIC_API_KEY"), reason="requires SME_ANTHROPIC_API_KEY (real API call)"
+    settings.anthropic_api_key is None,
+    reason="requires SME_ANTHROPIC_API_KEY (real API call); set it in the env or backend/.env",
 )
 def test_integration_real_brief_on_fixture_repo(session, tmp_path):
     _build_repo(tmp_path)
