@@ -118,6 +118,11 @@ def _product() -> Product:
     return Product(id=1, name="Auto Author", slug="auto-author")
 
 
+def test_mask_redacts_pii():
+    assert email_mod._mask("jane@example.com") == "j***@example.com"
+    assert email_mod._mask("garbage") == "***"
+
+
 def test_send_welcome_noop_when_unconfigured(monkeypatch):
     monkeypatch.setattr(email_mod.settings, "smtp_host", None)
     # If SMTP were attempted, this would explode — proves the no-op path.
@@ -131,6 +136,7 @@ def test_send_welcome_noop_when_unconfigured(monkeypatch):
 def test_send_welcome_builds_and_sends(monkeypatch):
     monkeypatch.setattr(email_mod.settings, "smtp_host", "smtp.example.com")
     monkeypatch.setattr(email_mod.settings, "smtp_port", 587)
+    monkeypatch.setattr(email_mod.settings, "smtp_starttls", True)
     monkeypatch.setattr(email_mod.settings, "smtp_from", "hello@autoauthor.app")
     monkeypatch.setattr(email_mod.settings, "smtp_user", "apikey")
 

@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_SECONDS = 30
 
 
+def _mask(email: str) -> str:
+    """Redact a lead email for logs — keep enough to debug, not the raw PII recipient."""
+    local, _, domain = email.partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "***"
+
+
 def _body(product: Product) -> str:
     return (
         f"Thanks for your interest in {product.name}!\n\n" "We'll be in touch shortly. — The team\n"
@@ -32,7 +38,7 @@ def send_welcome(to: str, product: Product) -> None:
     """Send one welcome email to a freshly-captured lead. No-op if SMTP is unconfigured."""
     host = settings.smtp_host
     if not host:
-        logger.info("SMTP not configured (SME_SMTP_HOST); skipping welcome email to %s", to)
+        logger.info("SMTP not configured (SME_SMTP_HOST); skipping welcome email to %s", _mask(to))
         return
 
     try:
@@ -52,4 +58,4 @@ def send_welcome(to: str, product: Product) -> None:
                 smtp.login(settings.smtp_user, settings.smtp_password.get_secret_value())
             smtp.send_message(msg)
     except Exception:  # best-effort: delivery failure must not break lead capture
-        logger.exception("welcome email to %s failed", to)
+        logger.exception("welcome email to %s failed", _mask(to))
