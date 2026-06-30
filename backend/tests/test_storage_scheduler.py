@@ -162,11 +162,11 @@ def test_unknown_kind_fails_immediately(session):
     assert job.attempts == 1  # no point retrying a config error
 
 
-def test_scheduler_builds_worker_and_heartbeat_jobs():
+def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
     # Built but not started — no background thread to tear down.
     scheduler = create_scheduler()
     ids = {j.id for j in scheduler.get_jobs()}
-    assert ids == {"worker", "heartbeat"}
+    assert ids == {"worker", "heartbeat", "crank"}
 
 
 def test_no_queue_cluster_deps_in_v1():

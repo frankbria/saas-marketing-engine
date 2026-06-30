@@ -40,9 +40,16 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def enqueue(session: Session, kind: str, product_id: int | None = None) -> JobRun:
+def enqueue(
+    session: Session,
+    kind: str,
+    product_id: int | None = None,
+    *,
+    channel_id: int | None = None,
+    content_type: str | None = None,
+) -> JobRun:
     """Insert a queued job_run and return it."""
-    job = JobRun(kind=kind, product_id=product_id)
+    job = JobRun(kind=kind, product_id=product_id, channel_id=channel_id, content_type=content_type)
     session.add(job)
     session.commit()
     session.refresh(job)

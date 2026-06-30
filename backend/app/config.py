@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # In-process worker loop / scheduler intervals (seconds).
     worker_interval_seconds: int = 5
     heartbeat_interval_seconds: int = 60
+    # How often the scheduler checks which products are due for a crank (S4.1). The crank *cadence*
+    # itself is per-product (default weekly); this is just the polling granularity. Hourly is ample.
+    crank_check_interval_seconds: int = 3600
 
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.
