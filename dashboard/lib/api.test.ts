@@ -4,12 +4,16 @@ import {
   apiFetch,
   approveStrategy,
   connectChannel,
+  getQaChecklist,
   getSetupChecklist,
   getStrategy,
+  goLive,
   listChannels,
   runSmokeTest,
   setChecklistItemStatus,
+  setQaItemStatus,
   triggerChannelSetup,
+  triggerQaChecklist,
   updateProduct,
   updateStrategy,
 } from "./api"
@@ -132,6 +136,39 @@ describe("pre-QA smoke test (S2.7)", () => {
     await runSmokeTest(7)
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toContain("/api/private/qa/7/smoke-test")
+    expect(init?.method).toBe("POST")
+  })
+})
+
+describe("QA gate (S3.2)", () => {
+  it("triggerQaChecklist POSTs the checklist endpoint", async () => {
+    const fetchMock = mockFetch({ job_id: 1, status: "queued" })
+    await triggerQaChecklist(7)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/qa/7/checklist")
+    expect(init?.method).toBe("POST")
+  })
+
+  it("getQaChecklist GETs the checklist endpoint", async () => {
+    const fetchMock = mockFetch([])
+    await getQaChecklist(7)
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/private/qa/7/checklist")
+  })
+
+  it("setQaItemStatus PATCHes the item with status + comment", async () => {
+    const fetchMock = mockFetch({ status: "pass" })
+    await setQaItemStatus(7, 4, "pass", "ok")
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/qa/7/checklist/4")
+    expect(init?.method).toBe("PATCH")
+    expect(init?.body).toBe(JSON.stringify({ status: "pass", comment: "ok" }))
+  })
+
+  it("goLive POSTs the go-live endpoint", async () => {
+    const fetchMock = mockFetch({ lifecycle_state: "live" })
+    await goLive(7)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/qa/7/go-live")
     expect(init?.method).toBe("POST")
   })
 })

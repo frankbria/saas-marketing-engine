@@ -102,6 +102,21 @@ export interface SetupChecklistItem {
   updated_at: string
 }
 
+// S3.1/S3.2: click-through QA checklist items the tester marks pass/fail (mirrors backend
+// QaChecklistItem / QaItemStatus).
+export type QaItemStatus = "pending" | "pass" | "fail"
+
+export interface QaChecklistItem {
+  id: number
+  product_id: number
+  ord: number
+  instruction: string
+  blocking: boolean
+  status: QaItemStatus
+  comment: string | null
+  updated_at: string
+}
+
 export interface ConnectRequest {
   access_token: string
   refresh_token?: string
@@ -219,3 +234,30 @@ export const runSmokeTest = (productId: number) =>
 // S2.8: emit the launch checklist from setup state. Requires a passed smoke test; advances to `qa`.
 export const emitLaunchChecklist = (productId: number) =>
   apiFetch<LaunchChecklist>(`/qa/${productId}/launch-checklist`, { method: "POST" })
+
+// S3.1: enqueue generation of the click-through QA checklist (202 + job id; rows appear once the
+// worker runs). Gated to `qa`.
+export const triggerQaChecklist = (productId: number) =>
+  apiFetch<{ job_id: number; status: string }>(`/qa/${productId}/checklist`, {
+    method: "POST",
+  })
+
+// S3.1: the click-through QA checklist items (empty until generation has run at the qa gate).
+export const getQaChecklist = (productId: number) =>
+  apiFetch<QaChecklistItem[]>(`/qa/${productId}/checklist`)
+
+// S3.2: record a tester's pass/fail + optional comment on one QA item.
+export const setQaItemStatus = (
+  productId: number,
+  itemId: number,
+  status: QaItemStatus,
+  comment?: string
+) =>
+  apiFetch<QaChecklistItem>(`/qa/${productId}/checklist/${itemId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, comment }),
+  })
+
+// S3.2: cross qa → live. 409s unless every blocking item passes.
+export const goLive = (productId: number) =>
+  apiFetch<Product>(`/qa/${productId}/go-live`, { method: "POST" })

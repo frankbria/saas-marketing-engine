@@ -1,4 +1,4 @@
-"""QA API (private dashboard, stories S2.7 + S2.8).
+"""QA API (private dashboard, stories S2.7 + S2.8 + S3.1 + S3.2).
 
 Both gate steps run synchronously on demand — they spend no LLM tokens and make no real network
 calls, so each returns immediately rather than going through the job queue. The gate to `qa` is
@@ -14,18 +14,20 @@ Both results are folded onto the product so the dashboard reads them from the ex
 
 3. `POST /checklist` (S3.1) — at the QA gate (`qa` state), enqueues a job that generates the
    click-through QA checklist (one Opus call, async like strategy) as `qa_checklist_item` rows;
-   `GET /checklist` lists them. Recording pass/fail + the go-live block is S3.2.
+   `GET /checklist` lists them.
+4. `PATCH /checklist/{item_id}` + `POST /go-live` (S3.2) — the tester marks each item pass/fail with
+   a comment; go-live is blocked until every *blocking* item passes, then crosses `qa → live`.
 """
 
 from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import LifecycleState, Product, QaChecklistItem
+from app.models import LifecycleState, Product, QaChecklistItem, QaItemStatus
 from app.modules.qa.launch_checklist import LaunchChecklist, emit_launch_checklist
 from app.modules.qa.smoke_test import SmokeTestResult, run_smoke_test
 from app.worker import enqueue
@@ -144,3 +146,87 @@ def get_qa_checklist(product_id: int, session: SessionDep) -> list[QaChecklistIt
         .where(QaChecklistItem.product_id == product_id)
         .order_by(QaChecklistItem.ord)
     ).all()
+
+
+class QaItemUpdate(BaseModel):
+    status: QaItemStatus
+    comment: str | None = None
+
+
+@router.patch("/{product_id}/checklist/{item_id}")
+def mark_qa_item(
+    product_id: int, item_id: int, payload: QaItemUpdate, session: SessionDep
+) -> QaChecklistItem:
+    """Record a tester's pass/fail + optional comment on one QA item (S3.2).
+
+    Gated to `qa`: the human QA gate is the only point where marking items is meaningful (a product
+    already `live` has cleared the gate; one still in setup hasn't reached it).
+    """
+    product = session.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    if product.lifecycle_state != LifecycleState.QA:
+        raise HTTPException(
+            status_code=409,
+            detail=f"product is {product.lifecycle_state}, not qa; "
+            "items are marked at the human QA gate",
+        )
+    item = session.get(QaChecklistItem, item_id)
+    if item is None or item.product_id != product_id:
+        raise HTTPException(status_code=404, detail="checklist item not found for this product")
+    item.status = payload.status
+    item.comment = payload.comment
+    item.updated_at = datetime.now(UTC)
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+@router.post("/{product_id}/go-live")
+def go_live(product_id: int, session: SessionDep) -> Product:
+    """Cross `qa → live` once every *blocking* QA item passes (S3.2).
+
+    Blocked (409) unless the checklist has been generated *and* every blocking item is `pass`;
+    non-blocking items never block. The gate is re-checked after the read so two overlapping POSTs
+    can't both start from `qa` and double-cross.
+    """
+    product = session.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    if product.lifecycle_state != LifecycleState.QA:
+        raise HTTPException(
+            status_code=409,
+            detail=f"product is {product.lifecycle_state}, not qa; "
+            "reach the QA gate before going live",
+        )
+
+    items = session.exec(
+        select(QaChecklistItem)
+        .where(QaChecklistItem.product_id == product_id)
+        .order_by(QaChecklistItem.ord)
+    ).all()
+    if not items:
+        raise HTTPException(
+            status_code=409,
+            detail="no QA checklist for this product; generate it and pass it before going live",
+        )
+    unpassed = [i.ord for i in items if i.blocking and i.status != QaItemStatus.PASS]
+    if unpassed:
+        raise HTTPException(
+            status_code=409,
+            detail="blocking QA items not passed: " + ", ".join(str(o) for o in unpassed),
+        )
+
+    session.refresh(product)
+    if product.lifecycle_state != LifecycleState.QA:
+        raise HTTPException(
+            status_code=409,
+            detail="product state changed while going live; retry from the latest state",
+        )
+    product.lifecycle_state = LifecycleState.LIVE
+    product.updated_at = datetime.now(UTC)
+    session.add(product)
+    session.commit()
+    session.refresh(product)
+    return product

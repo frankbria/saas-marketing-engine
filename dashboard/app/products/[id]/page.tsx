@@ -3,17 +3,20 @@ import { notFound } from "next/navigation"
 
 import {
   getProduct,
+  getQaChecklist,
   getSetupChecklist,
   getStrategy,
   listChannels,
   type Channel,
   type Product,
+  type QaChecklistItem,
   type SetupChecklistItem,
   type StrategyBrief,
 } from "@/lib/api"
 
 import { ChannelSetup } from "./channel-setup"
 import { LaunchChecklist } from "./launch-checklist"
+import { QaChecklist } from "./qa-checklist"
 import { SmokeTest } from "./smoke-test"
 import { StrategyReview } from "./strategy-review"
 
@@ -56,6 +59,14 @@ export default async function ProductDetailPage({
     checklist = []
   }
 
+  // QA checklist items exist once generation (S3.1) has run at the qa gate; empty until then.
+  let qaItems: QaChecklistItem[] = []
+  try {
+    qaItems = await getQaChecklist(productId)
+  } catch {
+    qaItems = []
+  }
+
   return (
     <div className="mx-auto flex min-h-svh w-full max-w-3xl flex-col gap-6 p-6">
       <div className="flex items-center justify-between">
@@ -96,6 +107,12 @@ export default async function ProductDetailPage({
         lifecycleState={product.lifecycle_state}
         launchChecklistJson={product.launch_checklist_json}
         smokePassed={smokePassed(product.smoke_test_json)}
+      />
+
+      <QaChecklist
+        productId={productId}
+        lifecycleState={product.lifecycle_state}
+        items={qaItems}
       />
     </div>
   )
