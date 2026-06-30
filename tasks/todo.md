@@ -22,7 +22,7 @@ Design (autonomous, no fork — minimal, matches existing seams):
   no-FK convention). `enqueue()` accepts them. (No-migration limitation per lessons.md — recreate dev DB.)
 - **Product** +`crank_cadence_seconds: int | None` (None ⇒ weekly default). Smallest surface for
   "default weekly; configurable per product" (rich brief cadence lives on strategy_brief).
-- **`app/modules/crank/scheduler.py`**: `ContentType` StrEnum (social|blog|video|podcast);
+- **`app/modules/crank/crank.py`**: `ContentType` StrEnum (social|blog|video|podcast);
   `_CHANNEL_CONTENT_TYPES` BLOG→[blog], REDDIT→[social] (Phase-A autonomous only);
   `enqueue_due_cranks(session, now) -> list[JobRun]` (pure/testable: LIVE products whose cadence
   elapsed since last `crank` job_run, or never cranked); `@handler("crank")` fans out one child

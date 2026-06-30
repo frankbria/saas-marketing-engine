@@ -6,6 +6,7 @@ test_scheduler_builds (it builds the jobs without starting a background thread).
 """
 
 import tomllib
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,9 @@ from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import worker
+from app.config import settings
 from app.models import JobRun, JobStatus
-from app.scheduler import create_scheduler
+from app.scheduler import _crank_tick, _heartbeat, _worker_tick, create_scheduler
 from app.worker import (
     MAX_ATTEMPTS,
     enqueue,
@@ -165,8 +167,18 @@ def test_unknown_kind_fails_immediately(session):
 def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
     # Built but not started — no background thread to tear down.
     scheduler = create_scheduler()
-    ids = {j.id for j in scheduler.get_jobs()}
-    assert ids == {"worker", "heartbeat", "crank"}
+    jobs = {j.id: j for j in scheduler.get_jobs()}
+    assert set(jobs) == {"worker", "heartbeat", "crank"}
+
+    # Pin each job's callable + interval, so a mis-wiring (wrong func/interval) fails the test.
+    expected = {
+        "worker": (_worker_tick, settings.worker_interval_seconds),
+        "heartbeat": (_heartbeat, settings.heartbeat_interval_seconds),
+        "crank": (_crank_tick, settings.crank_check_interval_seconds),
+    }
+    for job_id, (func, interval) in expected.items():
+        assert jobs[job_id].func is func
+        assert jobs[job_id].trigger.interval == timedelta(seconds=interval)
 
 
 def test_no_queue_cluster_deps_in_v1():

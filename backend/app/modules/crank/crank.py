@@ -43,7 +43,11 @@ _CHANNEL_CONTENT_TYPES: dict[ChannelType, tuple[ContentType, ...]] = {
 
 
 def _cadence_seconds(product: Product) -> int:
-    return product.crank_cadence_seconds or WEEKLY_SECONDS
+    # None or a non-positive (mis)configured value → the weekly default. A non-positive cadence
+    # would otherwise push the due-cutoff into the future and re-enqueue a crank on every poll.
+    # Clamp rather than raise: one bad product must not crash the tick for every other product.
+    cadence = product.crank_cadence_seconds
+    return cadence if cadence and cadence > 0 else WEEKLY_SECONDS
 
 
 def enqueue_due_cranks(session: Session, now: datetime) -> list[JobRun]:

@@ -106,6 +106,15 @@ def test_due_after_cadence_elapses(session):
     assert len(session.exec(select(JobRun).where(JobRun.kind == "crank")).all()) == 2
 
 
+@pytest.mark.parametrize("bad", [0, -1, -3600])
+def test_nonpositive_cadence_falls_back_to_weekly(session, bad):
+    # A non-positive cadence must NOT push the due-cutoff into the future (which would re-enqueue
+    # a crank on every poll); it's clamped to the weekly default. Cranked yesterday → still not due.
+    p = _product(session, slug="bad", cadence=bad)
+    _seed_crank(session, p.id, NOW - timedelta(days=1))
+    assert enqueue_due_cranks(session, NOW) == []
+
+
 def test_custom_cadence_per_product(session):
     fast = _product(session, slug="fast", cadence=3600)  # hourly
     slow = _product(session, slug="slow", cadence=None)  # weekly default
