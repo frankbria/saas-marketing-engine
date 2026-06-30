@@ -11,6 +11,10 @@ two-step (TECH_SPEC line 112: smoke pass **+** checklist emitted):
    real setup output onto `launch_checklist_json`, and crosses `setup_done → qa`.
 
 Both results are folded onto the product so the dashboard reads them from the existing product GET.
+
+3. `POST /checklist` (S3.1) — at the QA gate (`qa` state), enqueues a job that generates the
+   click-through QA checklist (one Opus call, async like strategy) as `qa_checklist_item` rows;
+   `GET /checklist` lists them. Recording pass/fail + the go-live block is S3.2.
 """
 
 from datetime import UTC, datetime
@@ -18,12 +22,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import LifecycleState, Product
+from app.models import LifecycleState, Product, QaChecklistItem
 from app.modules.qa.launch_checklist import LaunchChecklist, emit_launch_checklist
 from app.modules.qa.smoke_test import SmokeTestResult, run_smoke_test
+from app.worker import enqueue
 
 router = APIRouter(prefix="/qa", tags=["qa"])
 
@@ -106,3 +111,36 @@ def emit_checklist(product_id: int, session: SessionDep) -> LaunchChecklist:
     session.add(product)
     session.commit()
     return checklist
+
+
+@router.post("/{product_id}/checklist", status_code=202)
+def trigger_qa_checklist(product_id: int, session: SessionDep) -> dict:
+    """Enqueue click-through QA checklist generation (S3.1). 202 + job id to poll.
+
+    Gated to `qa`: the checklist describes the built product + funnel a tester clicks through, so
+    it's only meaningful once the launch checklist (S2.8) has crossed the product into the QA gate.
+    """
+    product = session.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    if product.lifecycle_state != LifecycleState.QA:
+        raise HTTPException(
+            status_code=409,
+            detail=f"product is {product.lifecycle_state}, not qa; "
+            "emit the launch checklist to reach the QA gate first",
+        )
+    job = enqueue(session, "qa_checklist", product_id=product_id)
+    return {"job_id": job.id, "status": job.status}
+
+
+@router.get("/{product_id}/checklist")
+def get_qa_checklist(product_id: int, session: SessionDep) -> list[QaChecklistItem]:
+    """List the product's QA checklist items in order (S3.1; pass/fail surface is S3.2)."""
+    product = session.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="product not found")
+    return session.exec(
+        select(QaChecklistItem)
+        .where(QaChecklistItem.product_id == product_id)
+        .order_by(QaChecklistItem.ord)
+    ).all()

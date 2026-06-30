@@ -6,6 +6,7 @@ from app.models.funnel_event import FunnelEvent, FunnelEventType
 from app.models.job_run import JobRun, JobStatus
 from app.models.metric_event import MetricEvent, MetricStage
 from app.models.product import LifecycleState, MonetizationModel, Product
+from app.models.qa_checklist_item import QaChecklistItem, QaItemStatus
 from app.models.setup_checklist_item import SetupChecklistItem, SetupItemStatus
 from app.models.strategy_brief import StrategyBrief
 
@@ -24,6 +25,8 @@ __all__ = [
     "MetricStage",
     "MonetizationModel",
     "Product",
+    "QaChecklistItem",
+    "QaItemStatus",
     "SetupChecklistItem",
     "SetupItemStatus",
     "StrategyBrief",
