@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
+import app.modules.crank.crank  # noqa: F401 — registers the crank + generate job handlers
 import app.modules.qa.checklist  # noqa: F401 — registers the qa_checklist job handler
 import app.modules.setup.channels  # noqa: F401 — registers the setup_channels job handler
 import app.modules.setup.site  # noqa: F401 — registers the setup_site job handler

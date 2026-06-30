@@ -1,6 +1,49 @@
 # SaaS Marketing Engine — Working Plan
 
-## S3.2 — QA pass/fail tracking + go-live block (#18)  ← ACTIVE
+## S4.1 — Scheduled crank (APScheduler + worker loop) (#19)  ← ACTIVE
+Self-authored plan (no plan comment on issue; only ACs). No architectural fork — worker.py already
+anticipates this ("real crank handlers register here in P4"); `job_run` worker loop + retries exist.
+Refs USER_STORIES S4.1, TECH_SPEC §8.1, PRD FR-19. **Scope: scheduling + fan-out ONLY** — the
+generate→critic→guard→publish pipeline is S4.2–S4.5.
+
+Acceptance criteria (issue #19) — all demoed with outcome evidence:
+- [x] APScheduler triggers a per-product `crank` job on cadence (default weekly; configurable per product)
+- [x] A tick creates a `crank` `job_run` that fans out per enabled **autonomous** channel × content type
+- [x] In-process worker loop retries failures (`job_run.attempts`)
+
+Done. 11 new tests (test_crank.py) + updated scheduler test; full suite 257 passed/3 skipped; ruff+black
+clean. Codex cross-family: 1 P1 = the known v1 no-migration limitation (carried as Known Limitation,
+consistent with S2.7/S2.8 precedent — not "fixed" with Alembic). Demo: all 3 ACs with outcome evidence.
+Known limitation: adding `crank_cadence_seconds`/`job_run.channel_id`/`content_type` to existing SQLite
+DBs needs a dev-DB recreate (no Alembic in v1 — see lessons.md).
+
+Design (autonomous, no fork — minimal, matches existing seams):
+- **job_run** +`channel_id: int | None`, +`content_type: str | None` (nullable, no FK — matches v1
+  no-FK convention). `enqueue()` accepts them. (No-migration limitation per lessons.md — recreate dev DB.)
+- **Product** +`crank_cadence_seconds: int | None` (None ⇒ weekly default). Smallest surface for
+  "default weekly; configurable per product" (rich brief cadence lives on strategy_brief).
+- **`app/modules/crank/crank.py`**: `ContentType` StrEnum (social|blog|video|podcast);
+  `_CHANNEL_CONTENT_TYPES` BLOG→[blog], REDDIT→[social] (Phase-A autonomous only);
+  `enqueue_due_cranks(session, now) -> list[JobRun]` (pure/testable: LIVE products whose cadence
+  elapsed since last `crank` job_run, or never cranked); `@handler("crank")` fans out one child
+  `generate` job_run per (enabled+autonomous+not-paused channel × applicable content type), carrying
+  channel_id + content_type, returns 0; `@handler("generate")` = **S4.2 seam** (validates inputs,
+  returns 0; real pipeline lands S4.2 — per-cell job_runs give crash isolation/retry per §8.3).
+- **scheduler.py**: add `crank` interval job (`crank_check_interval_seconds`, default 3600) →
+  `enqueue_due_cranks`. main.py imports crank module to register handlers.
+
+Steps (TDD RED→GREEN):
+1. [ ] job_run fields + enqueue() params; Product cadence field; config interval.
+2. [ ] crank module: ContentType, mapping, enqueue_due_cranks, crank+generate handlers.
+3. [ ] scheduler crank job; main.py import.
+4. [ ] tests/test_crank.py: enqueue_due_cranks (LIVE filter, due/not-due/never/custom cadence);
+   crank fan-out (correct cells; skips paused/non-autonomous/disabled; multi-channel); generate
+   seam validates; scheduler builds crank job; crank→generate children round-trip via run_due_jobs.
+Verify: `uv run pytest` 100%; ruff+black; deslop; codex review; demo all 3 ACs with evidence.
+
+---
+
+## S3.2 — QA pass/fail tracking + go-live block (#18)
 Self-authored plan (no plan comment on issue). No architectural fork — `qa_checklist_item` already
 carries `status`/`comment`/`blocking` (S3.1 pre-added them) and the `qa` gate exists (S2.8).
 Refs USER_STORIES S3.2, PRD FR-17/FR-18.

@@ -27,6 +27,10 @@ class JobRun(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     product_id: int | None = Field(default=None, index=True)  # no FK in v1 (see module docstring)
+    # Set on fanned-out crank children (S4.1): which channel + content type this job targets.
+    # Nullable, no FK — matches product_id's v1 convention; null on product-level jobs (crank/setup)
+    channel_id: int | None = Field(default=None, index=True)
+    content_type: str | None = None  # ContentType value: social|blog|video|podcast
     kind: str = Field(index=True)
     status: JobStatus = Field(default=JobStatus.QUEUED, index=True)
     attempts: int = 0

@@ -52,6 +52,12 @@ class Product(SQLModel, table=True):
     marketing_domain: str | None = None
     token_budget_cents_month: int = Field(default=0, ge=0)  # per-product hard cap (§5)
 
+    # Crank cadence (S4.1): how often the scheduler enqueues a crank for this product.
+    # None ⇒ the weekly default (TECH_SPEC §8.1). Richer per-post cadence lives on strategy_brief.
+    # A non-positive value is clamped to weekly in `_cadence_seconds` (table models skip Field
+    # validation, so the guard lives in code, not a constraint).
+    crank_cadence_seconds: int | None = None
+
     lifecycle_state: LifecycleState = Field(default=LifecycleState.DRAFT, index=True)
     # Latest pre-QA smoke-test result (S2.7), JSON-encoded `SmokeTestResult`; folded onto the row so
     # the dashboard reads it from the existing product GET (no separate table in v1).

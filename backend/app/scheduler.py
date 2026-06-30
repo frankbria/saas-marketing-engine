@@ -6,11 +6,14 @@ jobs: a `heartbeat` that enqueues a noop job_run (proving the scheduler path), a
 Phase B swaps these for Celery beat + workers without touching callers.
 """
 
+from datetime import UTC, datetime
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlmodel import Session
 
 from app.config import settings
 from app.db import engine
+from app.modules.crank.crank import enqueue_due_cranks
 from app.worker import enqueue, run_due_jobs
 
 
@@ -24,6 +27,11 @@ def _worker_tick() -> None:
         run_due_jobs(session)
 
 
+def _crank_tick() -> None:
+    with Session(engine) as session:
+        enqueue_due_cranks(session, datetime.now(UTC))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """Build (but don't start) the scheduler with the v1 interval jobs."""
     scheduler = BackgroundScheduler()
@@ -32,5 +40,8 @@ def create_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         _heartbeat, "interval", seconds=settings.heartbeat_interval_seconds, id="heartbeat"
+    )
+    scheduler.add_job(
+        _crank_tick, "interval", seconds=settings.crank_check_interval_seconds, id="crank"
     )
     return scheduler
