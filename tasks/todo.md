@@ -534,3 +534,34 @@ Acceptance criteria (from issue #1):
 - [ ] Pre-commit hooks: ruff + black (py), lint + tsc (ts) — all pass
 - [ ] CI runs backend + frontend tests on PR
 - [ ] Feature-branch → PR → main flow documented in README
+
+---
+
+# S3.1 — Generate click-through QA checklist (issue #17)
+
+**Goal:** Engine generates a concrete, ordered "open X, click Y, verify Z" checklist a
+non-technical tester can run — covering product login/use AND the payment funnel — persisted
+as `qa_checklist_item` rows. Mirrors the existing AI-generation handlers (pricing/brand/site):
+one Opus structured call, async via `enqueue` + `@handler`, budget-reserved. Generation runs
+while the product is in `qa` state (reached after S2.8). S3.2 adds pass/fail + go-live block.
+
+## Steps (TDD)
+1. Model `app/models/qa_checklist_item.py` — `QaChecklistItem` (id, product_id idx, ord,
+   instruction, blocking bool, status enum pending|pass|fail, comment, updated_at) +
+   `QaItemStatus`; export from `models/__init__.py`.
+2. AI client `app/ai/client.py` — `QA_MODEL`, `QA_MAX_TOKENS`, `QaStep`
+   (instruction, area product|funnel, blocking), `QaChecklist`, `generate_qa_checklist(...)`.
+3. Handler `app/modules/qa/checklist.py` — `_real_generate` (budget reserve like pricing),
+   `generate_qa_checklist_items(job, session, *, generate)` → require product in `qa` + a
+   strategy brief, validate coverage (>=1 product AND >=1 funnel step) else raise (retry),
+   replace existing rows idempotently, insert ord=1..n. Register `@handler("qa_checklist")`.
+4. Route `app/api/private/qa.py` — `POST /{id}/checklist` (202, gate lifecycle==qa) +
+   `GET /{id}/checklist` (list ordered).
+5. Wire `main.py` import to register handler.
+6. Tests `tests/test_qa_checklist.py` — worker wiring + persistence (stub generate), budget
+   gate, coverage validation, not-qa gate, idempotent regen, GET list; skipped real-API test.
+
+## Acceptance (issue #17)
+- [ ] Concrete, ordered "open X click Y verify Z" steps
+- [ ] Covers product login/use AND payment funnel
+- [ ] Persisted as qa_checklist_item rows

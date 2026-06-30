@@ -34,6 +34,9 @@ SITE_MAX_TOKENS = 1500  # output cap for site content (also the budget-reservati
 CHANNEL_MODEL = "claude-opus-4-8"  # per-channel handles/bios/profile copy (S2.6)
 CHANNEL_MAX_TOKENS = 2000  # output cap for channel profiles (also the budget-reservation ceiling)
 
+QA_MODEL = "claude-opus-4-8"  # click-through QA checklist generation (S3.1)
+QA_MAX_TOKENS = 2000  # output cap for the QA checklist (also the budget-reservation ceiling)
+
 
 class ICP(BaseModel):
     segment: str
@@ -127,6 +130,26 @@ class PricingRecommendation(BaseModel):
 
     price_amount_cents: int = Field(gt=0)  # e.g. 2900 = $29.00
     price_interval: Literal["month", "year"]
+
+
+class QaStep(BaseModel):
+    """One click-through QA step a non-technical tester runs (S3.1 / FR-16).
+
+    `area` tags whether the step exercises the product itself or the payment funnel, so the
+    handler can enforce the AC's "covers product AND funnel" before persisting. `blocking` marks
+    steps whose failure must block go-live (S3.2). `instruction` is a concrete imperative —
+    "open X, click Y, verify Z" — not a vague "check that it works".
+    """
+
+    instruction: str = Field(min_length=1)
+    area: Literal["product", "funnel"]
+    blocking: bool
+
+
+class QaChecklist(BaseModel):
+    """The ordered click-through checklist the single Opus call returns (S3.1)."""
+
+    steps: list[QaStep] = Field(min_length=1)
 
 
 def build_client() -> anthropic.Anthropic:
@@ -373,3 +396,60 @@ def recommend_pricing(
         )
     cost = cost_cents(PRICING_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return rec, cost
+
+
+def generate_qa_checklist(
+    client: anthropic.Anthropic,
+    product_name: str,
+    description: str | None,
+    positioning: str,
+    marketing_domain: str | None,
+    price_label: str,
+) -> tuple[QaChecklist, int]:
+    """Generate a concrete click-through QA checklist (S3.1). Returns (checklist, cost_cents).
+
+    The plumbing is already smoke-tested (S2.7), so the tester verifies the *product* + the
+    *payment funnel* end-to-end: site is the public marketing site the engine built; the funnel is
+    landing → signup/email capture → Stripe (test-mode) checkout at the configured price.
+    """
+    site = marketing_domain or "the product's landing site"
+    user = (
+        f"Product: {product_name}\n"
+        f"What it does: {description or '(none)'}\n"
+        f"Positioning: {positioning or '(none)'}\n"
+        f"Marketing site: {site}\n"
+        f"Price: {price_label}\n\n"
+        "Write an ordered click-through QA checklist a non-technical tester can follow without any "
+        "engineering knowledge. Each step is one concrete action + the expected outcome, phrased "
+        "as 'open X, click Y, verify Z'. Cover BOTH:\n"
+        "  - product: signing up / logging in and using the core product flow, and that the design "
+        "and content render correctly;\n"
+        "  - funnel: the marketing site's lead capture and the Stripe test-mode checkout reaching "
+        "the correct price.\n"
+        "Mark a step blocking when its failure must stop launch (a broken signup or checkout); "
+        "non-blocking for cosmetic checks. Tag each step's area as 'product' or 'funnel'. Include "
+        "at least one product step and at least one funnel step."
+    )
+    response = client.messages.parse(
+        model=QA_MODEL,
+        max_tokens=QA_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a QA lead writing a click-through test script for a non-technical tester. "
+            "Every step must be a concrete, ordered action with a verifiable expected outcome — no "
+            "vague 'make sure it works'. Assume the tester only has a browser."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=QaChecklist,
+    )
+    # adaptive thinking may emit a thinking block first — scan for the text block with the object.
+    checklist = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if checklist is None:  # refusal or unparsable — surface, don't persist an empty checklist
+        raise RuntimeError(
+            f"QA checklist generation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(QA_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return checklist, cost
