@@ -1,6 +1,36 @@
 # SaaS Marketing Engine — Working Plan
 
-## S2.8 — Launch checklist emission (#16)  ← ACTIVE
+## S3.2 — QA pass/fail tracking + go-live block (#18)  ← ACTIVE
+Self-authored plan (no plan comment on issue). No architectural fork — `qa_checklist_item` already
+carries `status`/`comment`/`blocking` (S3.1 pre-added them) and the `qa` gate exists (S2.8).
+Refs USER_STORIES S3.2, PRD FR-17/FR-18.
+
+Acceptance criteria (issue #18):
+- [x] Mark each item pass/fail with optional comments
+- [x] Go-live blocked until all blocking items pass
+- [x] State → `live` only on full pass
+
+Design (autonomous, no fork):
+- **Backend** (`api/private/qa.py`):
+  1. `PATCH /qa/{pid}/checklist/{item_id}` body `{status, comment?}` — sets pass/fail + optional
+     tester comment, bumps `updated_at`. Gated to `qa` (409 otherwise; meaningless post-`live`).
+     404 if item not for product. Returns the item. Mirrors the S2.6 `ChecklistUpdate` PATCH.
+  2. `POST /qa/{pid}/go-live` — requires `qa`; requires ≥1 checklist item (can't go live with zero
+     QA → 409 "generate the QA checklist first"); blocks (409, lists offending ords) unless **every
+     blocking item is `pass`** (non-blocking fails never block); on full pass crosses `qa → live`.
+     Race-recheck after read like the other qa routes.
+- **Frontend**: `lib/api.ts` adds `QaItemStatus`/`QaChecklistItem` types + `getQaChecklist`,
+  `setQaItemStatus`, `goLive`; new `qa-checklist.tsx` client component (per-item pass/fail buttons +
+  comment box, "Go live" enabled only when all blocking pass); `page.tsx` fetches items + renders.
+- **Tests**: `test_qa_gate.py` (mark pass/fail+comment; blocked on pending/failing blocking item;
+  non-blocking fail doesn't block; full pass→`live`; wrong-state 409; empty-checklist 409); extend
+  `lib/api.test.ts`.
+
+Verify: `uv run pytest` 100%; ruff+black; dashboard lint+tsc+test+build; demo all 3 ACs with evidence.
+
+---
+
+## S2.8 — Launch checklist emission (#16)
 Self-authored plan (issue had ACs only, no plan comment). No architectural fork.
 **Branch:** `feat/s2.8-launch-checklist` · Refs USER_STORIES S2.8, TECH_SPEC §6/§6.7, PRD FR-15.
 

@@ -108,6 +108,14 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   (fallback: checkout `metadata.product_id`) and writes `metric_event(stage=paid, value=amount_total)`.
   Unattributable session → ack (200), no write. Idempotent on `source="stripe:<session_id>"`
   (app pre-check + a `unique` constraint backstop so a concurrent redelivery can't double-count).
+- `api/private/qa.py` — the QA gate. `POST .../qa/{id}/smoke-test` (S2.7) records the pre-QA smoke
+  verdict; `POST .../qa/{id}/launch-checklist` (S2.8) emits the deterministic launch checklist from
+  real setup state and crosses `setup_done → qa`. At the gate: `POST .../qa/{id}/checklist` (S3.1)
+  enqueues an Opus call that generates the click-through `qa_checklist_item` rows (202), `GET` lists
+  them. **S3.2:** `PATCH .../qa/{id}/checklist/{item_id}` records a tester's `pass`/`fail` + comment
+  (gated to `qa`), and `POST .../qa/{id}/go-live` crosses `qa → live` only when the checklist exists
+  and every *blocking* item is `pass` (409 listing the offending ords otherwise; non-blocking fails
+  never block).
 
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
