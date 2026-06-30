@@ -65,8 +65,10 @@ def _real_generate(
                 f"(need ~{reserve}, have {remaining_cents} cents)"
             )
 
+    # Format as dollars the tester will actually see at Stripe checkout, not raw cents — otherwise
+    # the generated step may tell them to verify a price format that never appears on screen.
     price_label = (
-        f"{product.price_amount_cents} cents / {product.price_interval}"
+        f"${product.price_amount_cents / 100:,.2f} / {product.price_interval}"
         if product.price_amount_cents
         else "(no price configured)"
     )
