@@ -10,7 +10,7 @@ import {
   triggerQaChecklist,
   type LifecycleState,
   type QaChecklistItem,
-  type QaItemStatus,
+  type QaVerdict,
 } from "@/lib/api"
 
 // S3.2: the human QA gate. The tester marks each generated item pass/fail with a comment; go-live is
@@ -37,7 +37,7 @@ export function QaChecklist({
   const blockingUnpassed = items.filter((i) => i.blocking && i.status !== "pass")
   const canGoLive = atGate && items.length > 0 && blockingUnpassed.length === 0
 
-  async function mark(item: QaChecklistItem, status: QaItemStatus) {
+  async function mark(item: QaChecklistItem, status: QaVerdict) {
     setBusy(true)
     setError(null)
     try {
@@ -130,6 +130,9 @@ export function QaChecklist({
               {atGate && (
                 <div className="ml-6 flex flex-wrap items-center gap-2">
                   <input
+                    // Remount when the persisted item changes (after router.refresh) so the draft
+                    // tracks the server value instead of keeping a stale uncontrolled default.
+                    key={item.updated_at}
                     type="text"
                     aria-label={`Comment for step ${item.ord}`}
                     placeholder="Comment"

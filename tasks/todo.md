@@ -6,9 +6,9 @@ carries `status`/`comment`/`blocking` (S3.1 pre-added them) and the `qa` gate ex
 Refs USER_STORIES S3.2, PRD FR-17/FR-18.
 
 Acceptance criteria (issue #18):
-- [ ] Mark each item pass/fail with comments
-- [ ] Go-live blocked until all blocking items pass
-- [ ] State → `live` only on full pass
+- [x] Mark each item pass/fail with optional comments
+- [x] Go-live blocked until all blocking items pass
+- [x] State → `live` only on full pass
 
 Design (autonomous, no fork):
 - **Backend** (`api/private/qa.py`):

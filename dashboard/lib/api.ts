@@ -105,6 +105,8 @@ export interface SetupChecklistItem {
 // S3.1/S3.2: click-through QA checklist items the tester marks pass/fail (mirrors backend
 // QaChecklistItem / QaItemStatus).
 export type QaItemStatus = "pending" | "pass" | "fail"
+// A tester verdict — the PATCH contract excludes "pending" (the generated default).
+export type QaVerdict = "pass" | "fail"
 
 export interface QaChecklistItem {
   id: number
@@ -250,7 +252,7 @@ export const getQaChecklist = (productId: number) =>
 export const setQaItemStatus = (
   productId: number,
   itemId: number,
-  status: QaItemStatus,
+  status: QaVerdict,
   comment?: string
 ) =>
   apiFetch<QaChecklistItem>(`/qa/${productId}/checklist/${itemId}`, {

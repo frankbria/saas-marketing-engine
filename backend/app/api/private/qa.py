@@ -20,7 +20,7 @@ Both results are folded onto the product so the dashboard reads them from the ex
 """
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ValidationError
@@ -149,7 +149,9 @@ def get_qa_checklist(product_id: int, session: SessionDep) -> list[QaChecklistIt
 
 
 class QaItemUpdate(BaseModel):
-    status: QaItemStatus
+    # A tester records a verdict — `pass` or `fail`. `pending` is the generated default, not
+    # something the gate lets you set back, so it's excluded from the contract.
+    status: Literal[QaItemStatus.PASS, QaItemStatus.FAIL]
     comment: str | None = None
 
 
@@ -188,42 +190,45 @@ def go_live(product_id: int, session: SessionDep) -> Product:
     """Cross `qa → live` once every *blocking* QA item passes (S3.2).
 
     Blocked (409) unless the checklist has been generated *and* every blocking item is `pass`;
-    non-blocking items never block. The gate is re-checked after the read so two overlapping POSTs
-    can't both start from `qa` and double-cross.
+    non-blocking items never block. Both the product state and the blocking-item verdicts are
+    re-validated together right before the write, so a concurrent `PATCH` that flips a blocking item
+    can't slip a launch through the gate.
     """
     product = session.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="product not found")
-    if product.lifecycle_state != LifecycleState.QA:
-        raise HTTPException(
-            status_code=409,
-            detail=f"product is {product.lifecycle_state}, not qa; "
-            "reach the QA gate before going live",
-        )
 
-    items = session.exec(
-        select(QaChecklistItem)
-        .where(QaChecklistItem.product_id == product_id)
-        .order_by(QaChecklistItem.ord)
-    ).all()
-    if not items:
-        raise HTTPException(
-            status_code=409,
-            detail="no QA checklist for this product; generate it and pass it before going live",
-        )
-    unpassed = [i.ord for i in items if i.blocking and i.status != QaItemStatus.PASS]
-    if unpassed:
-        raise HTTPException(
-            status_code=409,
-            detail="blocking QA items not passed: " + ", ".join(str(o) for o in unpassed),
-        )
+    def _check_gate() -> None:
+        if product.lifecycle_state != LifecycleState.QA:
+            raise HTTPException(
+                status_code=409,
+                detail=f"product is {product.lifecycle_state}, not qa; "
+                "reach the QA gate before going live",
+            )
+        items = session.exec(
+            select(QaChecklistItem)
+            .where(QaChecklistItem.product_id == product_id)
+            .order_by(QaChecklistItem.ord)
+        ).all()
+        if not items:
+            raise HTTPException(
+                status_code=409,
+                detail="no QA checklist for this product; "
+                "generate it and pass it before going live",
+            )
+        unpassed = [i.ord for i in items if i.blocking and i.status != QaItemStatus.PASS]
+        if unpassed:
+            raise HTTPException(
+                status_code=409,
+                detail="blocking QA items not passed: " + ", ".join(str(o) for o in unpassed),
+            )
 
-    session.refresh(product)
-    if product.lifecycle_state != LifecycleState.QA:
-        raise HTTPException(
-            status_code=409,
-            detail="product state changed while going live; retry from the latest state",
-        )
+    _check_gate()
+    # Re-read product + items and re-validate the full gate right before the write, so a `PATCH`
+    # that flipped a blocking item (or a state change) between the first check and the commit is
+    # caught rather than overrun.
+    session.expire_all()
+    _check_gate()
     product.lifecycle_state = LifecycleState.LIVE
     product.updated_at = datetime.now(UTC)
     session.add(product)
