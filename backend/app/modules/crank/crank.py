@@ -11,9 +11,9 @@ its cell. Per-cell job_runs give crash isolation + independent retry (§8.3: "a 
 blocks others"). The handler adds the children without committing — the worker commits them
 atomically with the crank's DONE status (matches the brand/site/channels handlers).
 
-The `generate` handler is the **S4.2 seam**: the real generate→critic→guard→publish pipeline lands
-in S4.2 (worker.py: "real crank handlers register here in P4"). S4.1 only enforces that the fan-out
-carried each cell's identity; it spends no tokens.
+The `generate` handler (the real generate step, S4.2) lives in `generate.py`; this module only owns
+the cadence trigger + fan-out. S4.1 established that the fan-out carries each cell's identity and
+spends no tokens.
 """
 
 from datetime import datetime, timedelta
@@ -101,14 +101,3 @@ def _run_crank(job: JobRun, session: Session) -> int:
                 )
             )
     return 0  # fan-out spends no tokens
-
-
-@handler("generate")
-def _run_generate(job: JobRun, _session: Session) -> int:
-    """S4.2 seam: validate the fanned-out cell identity. The real pipeline lands in S4.2."""
-    if job.product_id is None or job.channel_id is None or job.content_type is None:
-        raise LookupError(
-            f"generate job {job.id} missing product_id/channel_id/content_type "
-            "(should be set by the crank fan-out)"
-        )
-    return 0
