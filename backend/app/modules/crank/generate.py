@@ -41,6 +41,11 @@ from app.worker import handler
 
 RECENT_LIMIT = 5  # how many recent items to feed the generator for novelty
 _RECENT_BODY_CHARS = 500  # cap each recent item's text so the novelty block stays bounded
+_SUPPORTED_CONTENT_TYPES = frozenset({ContentType.SOCIAL.value, ContentType.BLOG.value})
+# Fixed system + user-instruction text the generators always send (see ai/client.py), on top of the
+# variable brief/brand/novelty inputs — folded into the budget reservation so a nearly-exhausted
+# budget can't pass the gate and then overspend. Deliberately generous → err toward refusing.
+_FIXED_PROMPT_CHARS = 1200
 
 
 @dataclass
@@ -96,6 +101,7 @@ def _real_generate(
         post, cost = generate_social_post(
             build_client(), product.name, brand_kit, brief.positioning, pillars, recent_items
         )
+        _require_known_pillar(post.pillar, pillars, "social")
         meta = {"pillar": post.pillar, "hashtags": post.hashtags}
         return Generated(body=post.body, meta=meta), cost
 
@@ -103,6 +109,7 @@ def _real_generate(
         article, cost = generate_blog_article(
             build_client(), product.name, brand_kit, brief.positioning, pillars, recent_items
         )
+        _require_known_pillar(article.pillar, pillars, "blog")
         meta = {
             "pillar": article.pillar,
             "slug": article.slug,
@@ -113,13 +120,25 @@ def _real_generate(
     raise LookupError(f"no generator for content_type {content_type!r} (Phase A is social|blog)")
 
 
+def _require_known_pillar(pillar: str, pillars: list[str], kind: str) -> None:
+    """The AC requires generated metadata to reference a *real* content pillar. The model is told
+    to pick from the brief's pillars, but nothing forces it — reject a hallucinated one so it's
+    never persisted. RuntimeError (not LookupError) → the worker retries; the model usually
+    complies on a second pass, and a persistently off-brand model fails the job rather than saving
+    off-brand metadata."""
+    if pillar not in pillars:
+        raise RuntimeError(f"{kind} generation returned unknown pillar {pillar!r} (not in brief)")
+
+
 def _reservation_input_estimate(
-    brief: StrategyBrief, brand_json: str, recent_items: list[str]
+    product_name: str, brief: StrategyBrief, brand_json: str, recent_items: list[str]
 ) -> int:
     """Rough input-token estimate for the budget reservation. ~3 chars/token, deliberately low
-    (→ higher token count → higher reserve → err toward refusing), matching brief.py."""
-    chars = len(brief.positioning) + len(brief.content_pillars_json) + len(brand_json)
-    chars += sum(len(item) for item in recent_items)
+    (→ higher token count → higher reserve → err toward refusing), matching brief.py. Counts every
+    input the generators actually send: the variable brief/brand/novelty text, the product name,
+    and the fixed system + instruction overhead (`_FIXED_PROMPT_CHARS`)."""
+    chars = len(product_name) + len(brief.positioning) + len(brief.content_pillars_json)
+    chars += len(brand_json) + sum(len(item) for item in recent_items) + _FIXED_PROMPT_CHARS
     return chars // 3
 
 
@@ -129,6 +148,14 @@ def run_generate(job, session: Session, *, generate: GenerateFn = _real_generate
         raise LookupError(
             f"generate job {job.id} missing product_id/channel_id/content_type "
             "(should be set by the crank fan-out)"
+        )
+    # Validate the content type up front — before any budget math or client setup. An unknown type
+    # is a wiring bug (Phase A is social|blog); routing it as "not blog → social" through the budget
+    # gate would be wrong, and it must fail the same way with or without an API key.
+    if job.content_type not in _SUPPORTED_CONTENT_TYPES:
+        raise LookupError(
+            f"generate job {job.id} has unsupported content_type {job.content_type!r} "
+            "(Phase A is social|blog)"
         )
 
     product = session.get(Product, job.product_id)
@@ -160,7 +187,9 @@ def run_generate(job, session: Session, *, generate: GenerateFn = _real_generate
             if job.content_type == ContentType.BLOG.value
             else GEN_SOCIAL_MAX_TOKENS
         )
-        est_input = _reservation_input_estimate(brief, product.brand_json, recent_items)
+        est_input = _reservation_input_estimate(
+            product.name, brief, product.brand_json, recent_items
+        )
         reserve = cost_cents(GEN_MODEL, est_input, max_out)
         if reserve > remaining:
             raise RuntimeError(

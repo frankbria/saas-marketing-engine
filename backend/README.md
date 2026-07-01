@@ -100,7 +100,7 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   change or a switch off `cc_sub` clears it (no-op resubmits preserved). Real-API tests gated on
   `SME_STRIPE_API_KEY`.
 - `models/metric_event.py` (S2.5) — `MetricEvent` (TECH_SPEC §4): `product_id`, nullable
-  `channel_id`/`content_item_id` (those tables arrive in P4), `stage`
+  `channel_id`/`content_item_id` (`content_item` arrived in S4.2), `stage`
   (`impression|visit|signup|paid`), `value` (cents for `paid`), `occurred_at`, and a `source`
   provenance/idempotency key (`unique`).
 - `api/public/stripe.py` (S2.5) — closes the attribution chain: on a signature-verified
@@ -116,6 +116,33 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   (gated to `qa`), and `POST .../qa/{id}/go-live` crosses `qa → live` only when the checklist exists
   and every *blocking* item is `pass` (409 listing the offending ords otherwise; non-blocking fails
   never block).
+
+### Scheduled crank (S4.1)
+
+- `modules/crank/crank.py` — `enqueue_due_cranks`: one `crank` job per LIVE product whose cadence
+  has elapsed since its last crank (due-ness is DB-side; no Python tz arithmetic on SQLite
+  datetimes). `@handler("crank")` fans out one `generate` child `job_run` per enabled, autonomous,
+  non-paused channel × applicable content type (`blog` for `ChannelType.BLOG`, `social` for
+  `ChannelType.REDDIT`). Children carry `channel_id`/`content_type` for per-cell crash isolation;
+  added (not committed) here — the worker commits them atomically with the crank's DONE status.
+
+### Content generators — social + SEO blog (S4.2)
+
+- `models/content_item.py` — `ContentItem` + `ContentItemStatus`: one row per generated piece,
+  scoped by `(product_id, channel_id, content_type)`. Full pipeline state set (`generated →
+  critic_passed/failed → guard_failed → scheduled → published → retracted`); nullable seam columns
+  (`critic_*`, `idempotency_key`, `scheduled_for`, `published_at`, `external_url`, `error`) are
+  pre-seeded so S4.3–S4.7 need no `ALTER TABLE` (no Alembic in v1).
+- `modules/crank/generate.py` — `@handler("generate")`: budget-gated per-cell content generator
+  (mirrors `brief.py`: pre-check + reservation before the LLM call, injected `generate=` fn for
+  testability). Loads product + brief + brand kit; fetches the 5 most-recent non-failed items for
+  novelty; calls `generate_social_post` or `generate_blog_article`; validates the returned pillar
+  against the brief's content pillars; persists `ContentItem(status=GENERATED)`. No commit here —
+  the worker commits it atomically with the job's DONE status + cost.
+- `ai/client.py` additions — `SocialPost` and `BlogArticle` structured-output models;
+  `generate_social_post` / `generate_blog_article` using `claude-opus-4-8` with adaptive thinking
+  and a novelty block of recent items so the model avoids near-duplicate themes. Token caps:
+  `GEN_SOCIAL_MAX_TOKENS=1000`, `GEN_BLOG_MAX_TOKENS=4000`.
 
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.

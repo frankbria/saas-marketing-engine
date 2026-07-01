@@ -62,7 +62,10 @@ class ContentItem(SQLModel, table=True):
     # Pipeline-state seams (nullable) filled by S4.3–S4.7 — see module docstring.
     critic_score: float | None = None
     critic_notes: str | None = None
-    idempotency_key: str | None = None  # unique publish key (S4.5)
+    # Unique publish key (S4.5): enforce uniqueness now so the S4.5 dedup doesn't need the SQLite
+    # ALTER this seam-preseeding is meant to avoid. All S4.2 rows leave it NULL (SQLite permits
+    # multiple NULLs under a UNIQUE constraint), so the constraint is inert until publish sets it.
+    idempotency_key: str | None = Field(default=None, unique=True)
     scheduled_for: datetime | None = None
     published_at: datetime | None = None
     external_url: str | None = None

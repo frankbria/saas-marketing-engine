@@ -188,6 +188,39 @@ def test_real_generate_rejects_phase_b_content_type(session):
         gen_mod._real_generate(p, brief, brand_kit, "video", [])
 
 
+def test_real_generate_rejects_hallucinated_pillar(session, monkeypatch):
+    # The model must echo a pillar from the brief; a made-up one is rejected, not persisted.
+    p = _product(session)
+    brief = _brief(session, p.id, pillars=["onboarding"])
+    brand_kit = BrandKit.model_validate_json(p.brand_json)
+
+    def fake_social(client, name, kit, positioning, pillars, recent):
+        from app.ai.client import SocialPost
+
+        return SocialPost(body="s", hashtags=[], pillar="totally-made-up"), 3
+
+    monkeypatch.setattr(gen_mod, "build_client", lambda: object())
+    monkeypatch.setattr(gen_mod, "generate_social_post", fake_social)
+
+    with pytest.raises(RuntimeError, match="unknown pillar"):
+        gen_mod._real_generate(p, brief, brand_kit, "social", [])
+
+
+def test_run_generate_rejects_unsupported_content_type_before_budget(session):
+    # An unsupported content_type must fail as a wiring error up front — before budget math or the
+    # generator runs (and independent of an API key).
+    p = _product(session, budget=100)
+    _brief(session, p.id)
+    c = _channel(session, p.id, ChannelType.BLOG)
+    job = _gen_job(session, p.id, c.id, "video")
+
+    def stub(*a, **k):
+        raise AssertionError("generator must not run for an unsupported content_type")
+
+    with pytest.raises(LookupError, match="unsupported content_type"):
+        run_generate(job, session, generate=stub)
+
+
 # --- novelty (AC2) -----------------------------------------------------------------------------
 
 

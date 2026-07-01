@@ -162,7 +162,7 @@ class SocialPost(BaseModel):
 
     body: str = Field(min_length=1)  # the post copy, ready to publish
     hashtags: list[str] = Field(default_factory=list)
-    pillar: str
+    pillar: str = Field(min_length=1)
 
 
 class BlogArticle(BaseModel):
@@ -173,7 +173,7 @@ class BlogArticle(BaseModel):
     slug: str = Field(min_length=1)
     meta_description: str = Field(min_length=1)
     body: str = Field(min_length=1)  # markdown
-    pillar: str
+    pillar: str = Field(min_length=1)
 
 
 def build_client() -> anthropic.Anthropic:
