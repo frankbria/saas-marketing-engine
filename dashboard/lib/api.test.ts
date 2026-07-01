@@ -4,6 +4,7 @@ import {
   apiFetch,
   approveStrategy,
   connectChannel,
+  getFunnel,
   getQaChecklist,
   getSetupChecklist,
   getStrategy,
@@ -111,7 +112,9 @@ describe("channels + setup checklist (S2.6)", () => {
   it("getSetupChecklist GETs the checklist endpoint", async () => {
     const fetchMock = mockFetch([])
     await getSetupChecklist(7)
-    expect(fetchMock.mock.calls[0][0]).toContain("/api/private/channels/7/checklist")
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      "/api/private/channels/7/checklist"
+    )
   })
 
   it("connectChannel POSTs the token to the connect endpoint", async () => {
@@ -213,5 +216,34 @@ describe("QA gate (S3.2)", () => {
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toContain("/api/private/qa/7/go-live")
     expect(init?.method).toBe("POST")
+  })
+})
+
+describe("attributed funnel (S6.1)", () => {
+  it("getFunnel GETs the funnel endpoint and returns the parsed body", async () => {
+    const body = {
+      stages: { impressions: 10, visits: 5, signups: 2, paid: 1 },
+      revenue_cents: 999,
+      rows: [
+        {
+          channel_id: 1,
+          channel_type: "reddit",
+          content_item_id: 7,
+          title: "Post title",
+          external_url: "https://reddit.com/r/x/1",
+          impressions: 10,
+          visits: 5,
+          signups: 2,
+          paid: 1,
+          revenue_cents: 999,
+        },
+      ],
+    }
+    const fetchMock = mockFetch(body)
+    const data = await getFunnel(7)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/metrics/7/funnel")
+    expect(init?.method).toBe("GET")
+    expect(data).toEqual(body)
   })
 })

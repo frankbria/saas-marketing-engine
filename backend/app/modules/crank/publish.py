@@ -36,6 +36,7 @@ from app.modules.crank.oauth_refresh import (
     needs_refresh,
     refresh_channel_token,
 )
+from app.modules.metrics.utm import thread_utm_links
 from app.secrets.vault import get_credential, get_credential_expiry
 
 
@@ -213,6 +214,10 @@ def publish_scheduled(
                 if adapter.credential_key
                 else None
             )
+            # Thread this item's UTM params onto any marketing-domain link in the body (S6.1) so
+            # the published artifact and the stored body match, and a reader who clicks through is
+            # attributable all the way to the funnel capture.
+            item.body = thread_utm_links(item.body, product, channel, item)
             result = adapter.publish(item, product, channel, creds)
         except Retryable:
             # Transient — leave `scheduled`, retry next tick. Nothing was committed for this item.
@@ -237,8 +242,9 @@ def publish_scheduled(
         item.published_at = now
         item.error = None
         session.add(item)
-        # Per-item metric seam (reach/attribution fill in during P6). Unique `source` makes the
-        # metric idempotent alongside the item's status guard.
+        # Per-item impression metric (reach comes later, S6.2+; attribution is the UTM thread above
+        # + the S6.1 webhook/rollup join). Unique `source` makes the metric idempotent alongside the
+        # item's status guard.
         session.add(
             MetricEvent(
                 product_id=product.id,

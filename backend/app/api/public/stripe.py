@@ -21,6 +21,7 @@ from app.config import settings
 from app.db import get_session
 from app.models.funnel_event import FunnelEvent, FunnelEventType
 from app.models.metric_event import MetricEvent, MetricStage
+from app.modules.metrics.utm import resolve_attribution
 
 router = APIRouter(prefix="/stripe", tags=["stripe"])
 
@@ -64,7 +65,10 @@ def _attribute_paid_metric(event: dict, session: Session) -> None:
     """Join a `checkout.session.completed` event to its lead → write `metric_event(stage=paid)`.
 
     Attribution is `client_reference_id` (first-touch token) → lead `FunnelEvent` → `product_id`,
-    falling back to the checkout's `metadata.product_id` when the cookie/lead is missing. An
+    falling back to the checkout's `metadata.product_id` when the cookie/lead is missing. When the
+    lead resolved, its UTM fields resolve `channel_id`/`content_item_id` too (S6.1,
+    `resolve_attribution` — the same join the funnel rollup uses), so a paid row is joinable back to
+    the exact channel/content item that drove it wherever the lead carried that data. An
     unattributable session is acknowledged but records nothing — never fail the webhook back to
     Stripe. Idempotent on the checkout session id (Stripe redelivers events).
     """
@@ -80,6 +84,7 @@ def _attribute_paid_metric(event: dict, session: Session) -> None:
         return
 
     product_id: int | None = None
+    lead: FunnelEvent | None = None
     if token:
         lead = session.exec(
             select(FunnelEvent).where(
@@ -95,11 +100,20 @@ def _attribute_paid_metric(event: dict, session: Session) -> None:
         except (TypeError, ValueError):
             product_id = None
     if product_id is None:
-        return  # unattributable — channel/content tables don't exist yet (S4.x) to fall further
+        return  # unattributable — no lead and no metadata product_id to fall back to
+
+    channel_id: int | None = None
+    content_item_id: int | None = None
+    if lead is not None:
+        channel_id, content_item_id = resolve_attribution(
+            session, product_id, lead.utm_source, lead.utm_content
+        )
 
     session.add(
         MetricEvent(
             product_id=product_id,
+            channel_id=channel_id,
+            content_item_id=content_item_id,
             stage=MetricStage.PAID,
             value=int(obj.get("amount_total") or 0),
             source=source,

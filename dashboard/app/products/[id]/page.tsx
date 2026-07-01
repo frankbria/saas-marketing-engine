@@ -18,6 +18,7 @@ import {
 } from "@/lib/api"
 
 import { ChannelSetup } from "./channel-setup"
+import { Funnel } from "./funnel"
 import { LaunchChecklist } from "./launch-checklist"
 import { PublishedContent } from "./published-content"
 import { QaChecklist } from "./qa-checklist"
@@ -102,6 +103,8 @@ export default async function ProductDetailPage({
         </span>
       </div>
       <h1 className="text-xl font-medium">{product.name}</h1>
+
+      <Funnel productId={productId} />
 
       {brief ? (
         <StrategyReview product={product} brief={brief} />
