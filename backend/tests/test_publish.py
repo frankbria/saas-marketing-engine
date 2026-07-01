@@ -390,10 +390,10 @@ def test_blog_slug_falls_back_to_item_id(session, tmp_path, monkeypatch):
 
 
 class _FakeSubmissionRow:
-    """A prior submission the remote-idempotency scan can match on."""
+    """A prior submission the remote-idempotency scan matches on (keyed by the body ref marker)."""
 
-    def __init__(self, title, subreddit, permalink):
-        self.title = title
+    def __init__(self, selftext, subreddit, permalink):
+        self.selftext = selftext
         self.subreddit = SimpleNamespace(display_name=subreddit)
         self.permalink = permalink
 
@@ -434,29 +434,56 @@ def test_reddit_adapter_submits_to_configured_subreddit(session, monkeypatch):
         profile={"subreddit": "SideProject", "flair_id": "f1"},
     )
     it = _item(session, p.id, c.id, title="Launch", body="value first")
+    it.idempotency_key = "reddit:1"  # set by the pace pass in production
     creds = json.dumps({"client_id": "x", "client_secret": "y", "user_agent": "z"})
 
     r = RedditAdapter().publish(it, p, c, creds)
     assert r.external_url == "https://www.reddit.com/r/test/comments/abc/hi/"
     assert record["subreddit"] == "SideProject"
     assert record["title"] == "Launch" and record["flair_id"] == "f1"
+    assert "sme-ref:reddit:1" in record["selftext"]  # idempotency marker embedded in the post body
 
 
 def test_reddit_idempotent_returns_existing_post_without_reposting(session, monkeypatch):
-    # A prior attempt already submitted this title to the subreddit; the remote check must find it
-    # and return its permalink instead of double-posting (S4.5 "check remote before re-post").
+    # A prior attempt already submitted this item (its ref marker is on a remote post); the check
+    # must find it by idempotency_key and return its permalink, never double-posting. Two items
+    # sharing a title but different keys must NOT collide — hence the marker, not the title.
     record: dict = {}
-    existing = [_FakeSubmissionRow("Launch", "SideProject", "/r/SideProject/comments/z/launch/")]
+    existing = [
+        _FakeSubmissionRow(
+            "value first\n\n^(sme-ref:reddit:7)", "SideProject", "/r/SideProject/comments/z/launch/"
+        )
+    ]
     monkeypatch.setattr(
         "app.channels.reddit._build_reddit", lambda creds: _FakeReddit(record, existing)
     )
     p = _product(session)
     c = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "SideProject"})
     it = _item(session, p.id, c.id, title="Launch", body="value first")
+    it.idempotency_key = "reddit:7"
 
     r = RedditAdapter().publish(it, p, c, json.dumps({"client_id": "x"}))
     assert r.external_url == "https://www.reddit.com/r/SideProject/comments/z/launch/"
     assert "title" not in record  # submit() was never called
+
+
+def test_reddit_same_title_different_key_does_not_dedup(session, monkeypatch):
+    # A remote post exists for a DIFFERENT item (key reddit:7) that happens to share the title.
+    # The new item (key reddit:8) must still post — title collisions must not suppress it.
+    record: dict = {}
+    existing = [
+        _FakeSubmissionRow("older\n\n^(sme-ref:reddit:7)", "SideProject", "/r/x/comments/old/")
+    ]
+    monkeypatch.setattr(
+        "app.channels.reddit._build_reddit", lambda creds: _FakeReddit(record, existing)
+    )
+    p = _product(session)
+    c = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "SideProject"})
+    it = _item(session, p.id, c.id, title="Launch", body="newer")
+    it.idempotency_key = "reddit:8"
+
+    RedditAdapter().publish(it, p, c, json.dumps({"client_id": "x"}))
+    assert record.get("selftext", "").startswith("newer")  # actually submitted, not deduped
 
 
 def test_reddit_missing_subreddit_is_permanent_error(session):
@@ -477,6 +504,20 @@ def test_reddit_network_error_is_retryable(session, monkeypatch):
     c = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "x"})
     it = _item(session, p.id, c.id)
     with pytest.raises(Retryable):
+        RedditAdapter().publish(it, p, c, json.dumps({"client_id": "x"}))
+
+
+def test_reddit_permanent_error_propagates_not_retryable(session, monkeypatch):
+    # A permanent Reddit API/validation error (not a network blip) must surface as-is so the
+    # publish pass records `publish_failed` instead of retrying a doomed post forever.
+    def boom(creds):
+        raise ValueError("SUBREDDIT_NOTALLOWED: banned")
+
+    monkeypatch.setattr("app.channels.reddit._build_reddit", boom)
+    p = _product(session)
+    c = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "x"})
+    it = _item(session, p.id, c.id)
+    with pytest.raises(ValueError):  # not wrapped in Retryable
         RedditAdapter().publish(it, p, c, json.dumps({"client_id": "x"}))
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 
 from app.channels.base import PublishResult
@@ -61,8 +62,12 @@ class BlogAdapter:
             f"<body>\n<article>\n<h1>{html.escape(title)}</h1>\n"
             f"<div>{html.escape(item.body)}</div>\n</article>\n</body></html>\n"
         )
-        # Overwrite-safe: re-publishing the same item lands the same file (idempotent).
-        (blog_dir / f"{post_slug}.html").write_text(page, encoding="utf-8")
+        # Write atomically (temp file + os.replace) so a crash mid-write can't corrupt an already
+        # published page; re-publishing the same item lands the same path (overwrite-safe).
+        target = blog_dir / f"{post_slug}.html"
+        tmp = blog_dir / f".{post_slug}.html.tmp"
+        tmp.write_text(page, encoding="utf-8")
+        os.replace(tmp, target)
         return PublishResult(external_url=_external_url(product, post_slug))
 
     def delete(

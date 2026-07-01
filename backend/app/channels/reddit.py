@@ -10,12 +10,17 @@ rules respected".
 the stubbed test path stays network-free; `_build_reddit` is module-level so tests inject a fake
 client. Any PRAW/network error is wrapped as `Retryable` so the publish pass retries next tick.
 
-Idempotency: Reddit has no native idempotency key, so before submitting we scan the authenticated
-account's recent submissions for a post with the same title in the target subreddit and return that
-permalink instead of re-posting — the §7 "check remote before re-post" rule, closing the
-retry/crash-window double-post (submit succeeded but the status commit didn't). The scan is
-best-effort (bounded to the most recent submissions); the DB status guard remains the primary
+Idempotency: Reddit has no native idempotency key, so each post embeds the item's
+`idempotency_key` as a small ref marker in its body; before submitting we scan the authenticated
+account's recent submissions for that marker and return the existing permalink instead of
+re-posting — the §7 "check remote before re-post" rule, keyed on `idempotency_key` (not title, so
+two items that share a title never collide), closing the retry/crash-window double-post. The scan
+is best-effort (bounded to the most recent submissions); the DB status guard remains the primary
 defense. The owned blog adapter, by contrast, is fully idempotent by construction.
+
+Errors are split: transient network/`prawcore` failures raise `Retryable` (the publish pass retries
+next tick); permanent Reddit API/auth/validation errors surface as-is so the pass marks the item
+`publish_failed` instead of retrying a doomed post forever.
 """
 
 from __future__ import annotations
@@ -41,16 +46,40 @@ def _permalink_url(permalink: str) -> str:
     return permalink if permalink.startswith("http") else f"https://www.reddit.com{permalink}"
 
 
-def _existing_permalink(reddit, subreddit: str, title: str) -> str | None:
-    """Return the permalink of an already-submitted post with this title in the target subreddit, or
-    None — the "check remote before re-post" idempotency guard (Reddit has no idempotency key)."""
+def _ref_marker(idempotency_key: str) -> str:
+    """Stable per-item marker embedded in the post body so the remote scan can identify the exact
+    prior post — keyed on `idempotency_key`, so two items with the same title never collide."""
+    return f"sme-ref:{idempotency_key}"
+
+
+def _body_with_marker(body: str, marker: str) -> str:
+    # Reddit renders `^(...)` as small superscript — an unobtrusive footer on a value-first post.
+    return f"{body}\n\n^({marker})"
+
+
+def _existing_permalink(reddit, subreddit: str, marker: str) -> str | None:
+    """Return the permalink of an already-submitted post carrying this item's ref marker in the
+    target subreddit, or None — the "check remote before re-post" idempotency guard."""
     for submission in reddit.user.me().submissions.new(limit=_RECENT_SUBMISSION_SCAN):
         if (
-            submission.title == title
+            marker in (getattr(submission, "selftext", "") or "")
             and submission.subreddit.display_name.lower() == subreddit.lower()
         ):
             return _permalink_url(submission.permalink)
     return None
+
+
+def _is_transient(exc: Exception) -> bool:
+    """Transient (retry) vs permanent (fail) split for Reddit publish errors. Network/`prawcore`
+    connectivity + 5xx + rate-limit are transient; Reddit API validation/auth errors are permanent
+    and must not be retried forever."""
+    if isinstance(exc, ConnectionError | TimeoutError):
+        return True
+    try:
+        from prawcore.exceptions import RequestException, ServerError, TooManyRequests
+    except ImportError:  # praw not installed in this env — default to the prior retry behavior
+        return True
+    return isinstance(exc, RequestException | ServerError | TooManyRequests)
 
 
 class RedditAdapter:
@@ -63,19 +92,27 @@ class RedditAdapter:
         subreddit, flair_id = _subreddit_and_flair(channel)
         parsed = _parse_creds(creds)
         title = item.title or item.body.splitlines()[0][:300]
+        # idempotency_key is set by the pace pass before an item is ever scheduled; guard anyway.
+        marker = _ref_marker(item.idempotency_key) if item.idempotency_key else None
+        selftext = _body_with_marker(item.body, marker) if marker else item.body
         try:
             reddit = _build_reddit(parsed)
             # Check remote before re-posting: a prior attempt that submitted but didn't commit its
-            # status leaves this item `scheduled`; don't double-post it.
-            existing = _existing_permalink(reddit, subreddit, title)
-            if existing is not None:
-                return PublishResult(external_url=existing)
+            # status leaves this item `scheduled`; the marker identifies that exact post.
+            if marker is not None:
+                existing = _existing_permalink(reddit, subreddit, marker)
+                if existing is not None:
+                    return PublishResult(external_url=existing)
             submission = reddit.subreddit(subreddit).submit(
-                title=title, selftext=item.body, flair_id=flair_id
+                title=title, selftext=selftext, flair_id=flair_id
             )
             permalink = submission.permalink
-        except Exception as exc:  # noqa: BLE001 — any PRAW/network failure is treated as transient
-            raise Retryable(f"reddit submit failed: {exc}") from exc
+        except Exception as exc:
+            # Transient → Retryable (retry next tick); permanent Reddit error → surface so the
+            # publish pass records `publish_failed` instead of retrying a doomed post forever.
+            if _is_transient(exc):
+                raise Retryable(f"reddit submit failed: {exc}") from exc
+            raise
         return PublishResult(external_url=_permalink_url(permalink))
 
     def delete(
@@ -85,8 +122,10 @@ class RedditAdapter:
         try:
             reddit = _build_reddit(parsed)
             reddit.submission(url=external_url).delete()
-        except Exception as exc:  # noqa: BLE001
-            raise Retryable(f"reddit delete failed: {exc}") from exc
+        except Exception as exc:
+            if _is_transient(exc):
+                raise Retryable(f"reddit delete failed: {exc}") from exc
+            raise
 
 
 def _subreddit_and_flair(channel: Channel) -> tuple[str, str | None]:
