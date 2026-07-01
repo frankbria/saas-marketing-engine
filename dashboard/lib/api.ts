@@ -138,10 +138,22 @@ export interface ContentItem {
   created_at: string
 }
 
+// PRAW script-app kwargs — the self-managed Reddit credential shape the engine stores under
+// `reddit_oauth` and the adapter consumes directly (S4.8.1).
+export interface RedditCredential {
+  client_id: string
+  client_secret: string
+  refresh_token: string
+  user_agent: string
+}
+
 export interface ConnectRequest {
-  access_token: string
+  // Owned providers (bare access token we hold + refresh):
+  access_token?: string
   refresh_token?: string
   expires_at?: string
+  // Self-managed providers (Reddit/PRAW): the structured credential the adapter consumes.
+  reddit?: RedditCredential
   account_ref?: string
 }
 

@@ -127,6 +127,17 @@ before the call (fail-closed on NULL), do the irreversible effect *before* the D
 adapter delete idempotent so a failed commit is a safe retry, and translate each engine error to a
 distinct status code so the dashboard shows why.
 
+## New typed request path must re-carry the old path's value guards (S4.8.1).
+S4.8.1 replaced the ambiguous `access_token: str` connect path for Reddit with a typed
+`RedditCredential` sub-model. The old path explicitly rejected an empty token (`if not
+payload.access_token: 400`); the new typed fields (`client_id: str`, …) silently accepted `""`/
+whitespace, so a direct API caller could store a connected-but-broken credential that only fails
+later at publish. Caught by the `codex` cross-family review, not by my first tests.
+**How to apply:** when you move a field from a hand-validated primitive to a typed model, port the
+value-level guards too (a Pydantic `@field_validator("*")` that strips + rejects blanks), not just
+the type. "Typed" ≠ "validated": `str` still admits the empty string. Add a blank-field regression
+test with parity to the sibling path's empty-input test.
+
 ## S4.8 — OAuth refresh: credential-shape contract + "config gap ≠ failure"
 **Context:** proactive OAuth refresh + fail-safe (#26). Cross-family `codex` review oscillated over
 five rounds on the same seam; the root cause was a *pre-existing* contract mismatch, not the new code.

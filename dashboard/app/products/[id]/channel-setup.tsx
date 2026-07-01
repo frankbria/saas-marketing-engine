@@ -137,30 +137,73 @@ export function ChannelSetup({
                 {profile.warmup_note && (
                   <p className="text-xs text-amber-700">⚠ {profile.warmup_note}</p>
                 )}
-                <form
-                  className="flex gap-2"
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    const token = String(
-                      new FormData(e.currentTarget).get("access_token") ?? ""
-                    ).trim()
-                    if (token)
+                {channel.type === "reddit" ? (
+                  <form
+                    className="flex flex-col gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      const data = new FormData(e.currentTarget)
+                      const reddit = {
+                        client_id: String(data.get("client_id") ?? "").trim(),
+                        client_secret: String(data.get("client_secret") ?? "").trim(),
+                        refresh_token: String(data.get("refresh_token") ?? "").trim(),
+                        user_agent: String(data.get("user_agent") ?? "").trim(),
+                      }
+                      if (!Object.values(reddit).every(Boolean)) {
+                        setError("All Reddit credential fields are required")
+                        return
+                      }
+                      run(() => connectChannel(productId, channel.id, { reddit }))
+                    }}
+                  >
+                    <input name="client_id" placeholder="client_id" className={field} />
+                    <input
+                      type="password"
+                      name="client_secret"
+                      placeholder="client_secret"
+                      className={field}
+                    />
+                    <input
+                      type="password"
+                      name="refresh_token"
+                      placeholder="refresh_token"
+                      className={field}
+                    />
+                    <input name="user_agent" placeholder="user_agent" className={field} />
+                    <Button type="submit" variant="outline" disabled={busy}>
+                      Connect
+                    </Button>
+                  </form>
+                ) : (
+                  <form
+                    className="flex gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      const token = String(
+                        new FormData(e.currentTarget).get("access_token") ?? ""
+                      ).trim()
+                      if (!token) {
+                        setError("An OAuth token is required")
+                        return
+                      }
                       run(() =>
                         connectChannel(productId, channel.id, {
                           access_token: token,
                         })
                       )
-                  }}
-                >
-                  <input
-                    name="access_token"
-                    placeholder="paste OAuth token"
-                    className={field}
-                  />
-                  <Button type="submit" variant="outline" disabled={busy}>
-                    Connect
-                  </Button>
-                </form>
+                    }}
+                  >
+                    <input
+                      type="password"
+                      name="access_token"
+                      placeholder="paste OAuth token"
+                      className={field}
+                    />
+                    <Button type="submit" variant="outline" disabled={busy}>
+                      Connect
+                    </Button>
+                  </form>
+                )}
               </li>
             )
           })}

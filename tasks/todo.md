@@ -1,55 +1,46 @@
-# S4.8 — OAuth refresh handling (fail-safe) · Issue #26
+# S4.8.1 — Reddit connect/adapter credential-shape mismatch (#64)
 
-**Story:** S4.8 · Refs USER_STORIES S4.8, TECH_SPEC §7/§9/§8.4, PRD FR-34
-**Branch:** `feature/issue-26-oauth-refresh-handling`
-**Plan source:** self-authored (no plan on the issue)
+**Story:** S4.8.1 · Refs TECH_SPEC §7/§9, follow-up to S2.6 (#14) + S4.8 (#26)
+**Branch:** `fix/issue-64-reddit-credential-shape`
+**Plan source:** self-authored (issue had acceptance criteria, no step-by-step plan)
+
+## Problem
+`/connect` stores `payload.access_token` (a bare string) under `reddit_oauth`, but
+`RedditAdapter._parse_creds` requires a JSON object of PRAW kwargs. A Reddit channel
+connected via the documented flow fails at publish (`reddit_oauth credential is not valid
+JSON`). The only shape that works today is an undocumented JSON blob pasted into `access_token`.
+
+## Design decision (autonomous — no architectural fork)
+The **documented Reddit credential shape is the PRAW-kwargs JSON object** the adapter already
+consumes. Express it explicitly in the `/connect` request as a typed sub-model. Route by a new
+`SELF_MANAGED_TYPES` constant (mirrors existing `AUTONOMOUS_TYPES`) rather than a magic
+`== REDDIT` literal. Self-managed creds are stored as one JSON blob under `{type}_oauth`, with
+no separate `_oauth_refresh` cred and no expiry (PRAW self-refreshes) — which keeps
+`is_self_managed_credential` classifying them as self-managed (AC4). Owned bare-token path is
+unchanged.
+
+## Steps
+1. **models/channel.py** — add `SELF_MANAGED_TYPES = frozenset({ChannelType.REDDIT})`.
+2. **api/private/channels.py** — add `RedditCredential` typed model (`client_id`,
+   `client_secret`, `refresh_token`, `user_agent`); add optional `reddit` field to
+   `ConnectRequest`; branch `connect_channel` on `SELF_MANAGED_TYPES` (store
+   `reddit.model_dump_json()` under `{type}_oauth`, 400 if missing). Update the deferral note.
+3. **channels/reddit.py** — no logic change (already parses PRAW-kwargs JSON); leave as-is.
+4. **Tests (test_channels_api.py)** — RED first:
+   - `test_connect_reddit_stores_praw_kwargs` (structured creds → `reddit_oauth` parseable JSON dict)
+   - `test_connect_reddit_missing_creds_400`
+   - keep an owned bare-token path test (non-self-managed type, e.g. `x`)
+   - `test_connect_reddit_then_publish_end_to_end` (real vault + fake PRAW → permalink) — AC3
+5. **Dashboard** (bug-ownership + lessons.md "check frontend callers") — `api.ts` ConnectRequest
+   type + `channel-setup.tsx` Reddit form collects the 4 PRAW fields; update `api.test.ts`.
 
 ## Acceptance criteria
-- [ ] Proactive refresh before token expiry
-- [ ] On refresh failure → channel `failed`, halt its publishes, fire alert (S6.2)
+- [ ] One documented, consistent Reddit credential shape across `/connect` + adapter
+- [ ] `/connect` expresses that shape explicitly (typed fields, not ambiguous `access_token: str`)
+- [ ] Channel connected via documented flow publishes end-to-end (real vault + fake PRAW test)
+- [ ] `is_self_managed_credential` / proactive-refresh routing stays correct
+- [ ] S4.8 fail-safe (`AuthFailure` fencing) intact
 
-## Design decisions (self-authored)
-- **Guard on `connect_state == FAILED`, not `== CONNECTED`.** The AC only requires *failed* channels
-  to halt. Requiring CONNECTED would halt blog/pending channels and break the existing S4.5/S4.6
-  suite (channels default to PENDING). FAILED-only is AC-faithful and non-breaking.
-- **Refresh-at-publish, mirroring the S4.6 `paused` check.** The token is only used at publish time,
-  so refreshing right before publish (when within a buffer of expiry) is the proactive point. No
-  separate periodic sweep (YAGNI — nothing else consumes the token between publishes).
-- **Injectable `refresh=` seam** on `publish_scheduled`, mirroring the existing `adapter_for=` seam,
-  so tests drive the full pass network-free (no-mocking house rule).
-- **Alert = minimal log choke-point** (`app/modules/alerts.py::raise_alert`). S6.2 (heartbeat digest
-  + delivery) is deferred; this is the single seam it will extend. Structured WARNING is grep-able
-  and testable via caplog.
-- **Default refresher** does a generic OAuth2 `refresh_token` grant (stdlib `urllib`) against a
-  per-type token endpoint, reading refresh token + client creds from the vault. Pure parts
-  (`needs_refresh`, `parse_token_response`) are unit-tested; the thin HTTP call is ops wiring
-  exercised only against the real provider.
-
-## Steps (TDD)
-1. `vault.get_credential_expiry()` — return latest credential's `expires_at` (or None).
-2. `app/modules/alerts.py` — `raise_alert(kind, message, **context)` → structured WARNING log.
-3. `app/modules/crank/oauth_refresh.py` — `REFRESH_BUFFER`, `needs_refresh`, `parse_token_response`,
-   `refresh_channel_token` (default), `TOKEN_ENDPOINTS`.
-4. `publish_scheduled` — add `connect_state == FAILED` to the pre-publish guard; add proactive
-   refresh (via injectable `refresh=`) for OAuth channels near expiry; on refresh failure set FAILED
-   + alert + leave item `scheduled`.
-5. `pace_content` + `crank._run_crank` — exclude `connect_state == FAILED` from channel selection
-   (consistency with `~paused`; avoids generating for a dead channel).
-6. Tests: FAILED channel halts publish (stays scheduled); near-expiry triggers refresh then
-   publishes with refreshed creds; refresh failure → FAILED + halt + alert fired; not-near-expiry /
-   no-expiry → no refresh; pure-helper unit tests for `needs_refresh` + `parse_token_response`.
-
-## Known limitations (for PR body)
-- Full per-provider authorize→callback OAuth redirect + client-credential seeding UI remain deferred
-  (already deferred by the connect endpoint's own note). Ops seeds client creds via the vault.
-- Reddit-via-PRAW stores `reddit_oauth` as a structured PRAW-kwargs blob and self-refreshes its
-  access token under the hood, so proactive refresh **skips** self-managed (JSON) credentials.
-  A dead *self-managed* refresh token is caught at publish time: the adapter raises `AuthFailure`
-  (401/403/OAuth), which the publish pass turns into the same channel-level fence (`failed` + alert),
-  so AC-2 holds for the real provider — not just bare-token stubs.
-- Owned bare-token credentials (the `/connect` shape) refresh via a real OAuth2 refresh_token grant
-  (`refresh_channel_token`), keyed by `TOKEN_ENDPOINTS` + vault client creds. `TOKEN_ENDPOINTS` is
-  empty in v1 (Reddit is self-managed; blog has no OAuth) — it's the provider-registration seam. An
-  unregistered near-expiry bare token is a *config gap* (`RefreshUnavailable`), not a failure: we
-  proceed and let the reactive `AuthFailure` fence catch it if the token is actually dead, rather
-  than halting a possibly-live channel. Full authorize→callback OAuth redirect UI remains deferred.
+## Test strategy
+Backend: pytest from `backend/` (real vault, fake PRAW via `_build_reddit` monkeypatch) — AC1–AC4.
+Frontend: vitest `api.test.ts` covers the new request body.
