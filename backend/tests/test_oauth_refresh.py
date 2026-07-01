@@ -52,6 +52,15 @@ def test_parse_token_response_without_expiry():
     assert expires_at is None
 
 
+def test_parse_token_response_zero_expiry_is_immediate():
+    # expires_in=0 means already expired — must NOT be dropped to "unknown" (None).
+    from app.modules.crank.oauth_refresh import parse_token_response
+
+    token, expires_at = parse_token_response({"access_token": "abc", "expires_in": 0}, NOW)
+    assert token == "abc"
+    assert expires_at == NOW
+
+
 def test_parse_token_response_missing_token_raises():
     import pytest
 

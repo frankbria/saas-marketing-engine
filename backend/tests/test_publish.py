@@ -784,14 +784,15 @@ def test_publish_adapter_lookup_failure_is_isolated(session):
 
 
 def test_reddit_auth_error_classified_as_auth_failure():
-    # A 401/403 or OAuth error means the (self-managed) credential is dead — classified as an auth
-    # failure so the publish pass fences the whole channel, not just the one item.
+    # A 401 or OAuth error means the (self-managed) credential is dead — classified as an auth
+    # failure so the publish pass fences the whole channel. A 403 (subreddit permission/policy
+    # denial) is a per-post problem, NOT a dead token, so it stays a per-item publish_failure.
     from prawcore.exceptions import ResponseException
 
     from app.channels.reddit import _is_auth_failure
 
     assert _is_auth_failure(ResponseException(SimpleNamespace(status_code=401))) is True
-    assert _is_auth_failure(ResponseException(SimpleNamespace(status_code=403))) is True
+    assert _is_auth_failure(ResponseException(SimpleNamespace(status_code=403))) is False
     assert _is_auth_failure(ResponseException(SimpleNamespace(status_code=400))) is False
     assert _is_auth_failure(ValueError("bad title")) is False
 

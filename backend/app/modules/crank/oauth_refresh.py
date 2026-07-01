@@ -24,6 +24,7 @@ provider-registration UI remain deferred (as `api/private/channels.py` already n
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.parse
 import urllib.request
@@ -79,22 +80,28 @@ def parse_token_response(data: dict, now: datetime) -> tuple[str, datetime | Non
     if not token:
         raise RuntimeError("token refresh response has no access_token")
     expires_in = data.get("expires_in")
-    expires_at = now + timedelta(seconds=int(expires_in)) if expires_in else None
+    # `is not None` (not truthiness): expires_in=0 means "already expired", not "unknown" — dropping
+    # it to None would make the next publish skip refresh for a dead token.
+    expires_at = now + timedelta(seconds=int(expires_in)) if expires_in is not None else None
     return token, expires_at
 
 
 def _post_token_refresh(
     endpoint: str, refresh_token: str, client_id: str, client_secret: str
 ) -> dict:  # pragma: no cover - real network; injected in tests, exercised against the provider
-    """OAuth2 refresh_token grant with HTTP Basic client auth. Raises on any HTTP/parse error."""
+    """OAuth2 refresh_token grant with HTTP Basic client auth. Raises on any HTTP/parse error.
+
+    The `Authorization` header is sent up front (not via `HTTPBasicAuthHandler`, which only
+    responds to a 401 challenge) — token endpoints that require client auth on the initial POST
+    (e.g. Reddit) reject a challenge-less first request."""
     body = urllib.parse.urlencode(
         {"grant_type": "refresh_token", "refresh_token": refresh_token}
     ).encode()
-    req = urllib.request.Request(endpoint, data=body, method="POST")  # noqa: S310 - fixed https
-    creds = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    creds.add_password(None, endpoint, client_id, client_secret)
-    opener = urllib.request.build_opener(urllib.request.HTTPBasicAuthHandler(creds))
-    with opener.open(req, timeout=30) as resp:
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    req = urllib.request.Request(  # noqa: S310 - fixed https endpoint from TOKEN_ENDPOINTS
+        endpoint, data=body, method="POST", headers={"Authorization": f"Basic {basic}"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed https endpoint
         return json.loads(resp.read().decode())
 
 

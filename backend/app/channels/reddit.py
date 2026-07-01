@@ -77,18 +77,22 @@ def _existing_permalink(reddit, subreddit: str, marker: str) -> str | None:
 
 
 def _is_auth_failure(exc: Exception) -> bool:
-    """A dead/revoked-token or unauthorized error (401/403 / OAuth). These are permanent like other
-    API errors, but channel-level: the whole channel's credential is bad, so S4.8 fences the channel
-    rather than just failing the one item. PRAW self-refreshes access tokens, so a failure here
-    means the refresh token itself is revoked/expired."""
+    """A dead/revoked-token error (401 / OAuth). These are permanent like other API errors, but
+    channel-level: the credential itself is bad, so S4.8 fences the whole channel rather than just
+    failing the one item. PRAW self-refreshes access tokens, so a failure here means the refresh
+    token itself is revoked/expired.
+
+    Deliberately NOT a 403/`Forbidden`: a 403 usually means a subreddit-level permission/policy
+    denial (banned, private sub, missing mod rights) — a per-post problem, not a dead credential —
+    so it stays a per-item `publish_failed` rather than fencing an otherwise-healthy channel."""
     try:
-        from prawcore.exceptions import Forbidden, InvalidToken, OAuthException, ResponseException
+        from prawcore.exceptions import InvalidToken, OAuthException, ResponseException
     except ImportError:  # praw not installed in this env — no auth classification available
         return False
-    if isinstance(exc, OAuthException | InvalidToken | Forbidden):
+    if isinstance(exc, OAuthException | InvalidToken):
         return True
     if isinstance(exc, ResponseException):
-        return getattr(getattr(exc, "response", None), "status_code", None) in (401, 403)
+        return getattr(getattr(exc, "response", None), "status_code", None) == 401
     return False
 
 
