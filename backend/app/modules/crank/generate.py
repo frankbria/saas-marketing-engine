@@ -1,13 +1,18 @@
-"""Generate-step job handler (TECH_SPEC §8.2 / story S4.2).
+"""Generate + critic-gate job handler (TECH_SPEC §8.2 / stories S4.2 + S4.3).
 
 Fills the `@handler("generate")` seam S4.1's fan-out left: for one (product, channel, content_type)
-cell, produce one on-brand `content_item` at the `generated` state. The generate → critic (S4.3) →
-guard (S4.4) → publish (S4.5) pipeline advances the same row's `status` in place; S4.2 is just the
-first step.
+cell, produce one on-brand `content_item` and run it through the critic+safety gate. The remaining
+pipeline — deterministic guard (S4.4), publish (S4.5) — advances the same row's `status` in place.
 
-Mirrors the S1.1/S1.2 handler pattern: budget pre-check + reservation before the LLM call, the LLM
-work injected (`generate=`) so the worker wiring + persistence are testable without a network call,
-and no commit here — the worker commits the new row atomically with the job's DONE status + cost.
+Per §8.2 this is a single per-item flow, so the critic lives here rather than in a separate handler:
+"regenerate (max N)" simply re-invokes the generator. Each attempt is generate → one critic+safety
+call; a safety failure hard-blocks (`guard_failed`), a passing score accepts (`critic_passed`), a
+low score regenerates, and exhausting the attempts skips+logs (`critic_failed`).
+
+Mirrors the S1.1/S1.2 handler pattern: budget pre-check + per-attempt reservation before each LLM
+pass, the LLM work injected (`generate=`/`critique=`) so the worker wiring + persistence are
+testable without a network call, and no commit here — the worker commits the row with the job's
+DONE status + summed cost.
 
 **Novelty (AC):** recent items already on the channel are fetched and fed into the generator prompt
 so it avoids near-duplicates. Pre-S4.5 nothing is `published` yet, so "recent" is the most-recent
@@ -24,15 +29,20 @@ from datetime import UTC, datetime
 from sqlmodel import Session, col, select
 
 from app.ai.client import (
+    CRITIC_MAX_TOKENS,
+    CRITIC_MODEL,
     GEN_BLOG_MAX_TOKENS,
     GEN_MODEL,
     GEN_SOCIAL_MAX_TOKENS,
     BrandKit,
+    CriticVerdict,
     build_client,
+    critique_content,
     generate_blog_article,
     generate_social_post,
 )
 from app.ai.pricing import cost_cents
+from app.config import settings
 from app.models import ContentItem, Product, StrategyBrief
 from app.models.content_item import _TERMINAL_FAILURE, ContentItemStatus
 from app.modules.crank.crank import ContentType
@@ -60,6 +70,8 @@ class Generated:
 
 # generate(product, brief, brand_kit, content_type, recent_items) -> (Generated, cost_cents)
 GenerateFn = Callable[[Product, StrategyBrief, BrandKit, str, list[str]], tuple[Generated, int]]
+# critique(product, brand_kit, content_type, candidate) -> (CriticVerdict, cost_cents)
+CritiqueFn = Callable[[Product, BrandKit, str, Generated], tuple[CriticVerdict, int]]
 
 
 def _utcnow() -> datetime:
@@ -130,6 +142,14 @@ def _require_known_pillar(pillar: str, pillars: list[str], kind: str) -> None:
         raise RuntimeError(f"{kind} generation returned unknown pillar {pillar!r} (not in brief)")
 
 
+def _real_critique(
+    product: Product, brand_kit: BrandKit, content_type: str, candidate: Generated
+) -> tuple[CriticVerdict, int]:
+    return critique_content(
+        build_client(), product.name, brand_kit, content_type, candidate.title, candidate.body
+    )
+
+
 def _reservation_input_estimate(
     product_name: str, brief: StrategyBrief, brand_json: str, recent_items: list[str]
 ) -> int:
@@ -142,8 +162,39 @@ def _reservation_input_estimate(
     return chars // 3
 
 
-def run_generate(job, session: Session, *, generate: GenerateFn = _real_generate) -> int:
-    """Produce + persist one content item for the fanned-out cell. Returns token cost in cents."""
+def _reserve_one_attempt(
+    product_name: str,
+    brief: StrategyBrief,
+    brand_json: str,
+    recent_items: list[str],
+    content_type: str,
+) -> int:
+    """Worst-case cost of one generate + critic pass, for the budget gate. The critic reads the
+    generated body (≈ the generator's output cap) plus the brand context, on the cheaper tier."""
+    gen_max_out = (
+        GEN_BLOG_MAX_TOKENS if content_type == ContentType.BLOG.value else GEN_SOCIAL_MAX_TOKENS
+    )
+    est_input = _reservation_input_estimate(product_name, brief, brand_json, recent_items)
+    gen_reserve = cost_cents(GEN_MODEL, est_input, gen_max_out)
+    critic_input = gen_max_out + len(brand_json) // 3 + 200  # body ≈ gen output + brand + overhead
+    critic_reserve = cost_cents(CRITIC_MODEL, critic_input, CRITIC_MAX_TOKENS)
+    return gen_reserve + critic_reserve
+
+
+def run_generate(
+    job,
+    session: Session,
+    *,
+    generate: GenerateFn = _real_generate,
+    critique: CritiqueFn = _real_critique,
+) -> int:
+    """Generate → critic+safety gate → persist one content item for the fanned-out cell (S4.2+S4.3).
+
+    Loops up to `1 + critic_max_regenerations` times: generate a candidate, critique it, and either
+    hard-block on a safety failure (`guard_failed`), accept on `score >= threshold`
+    (`critic_passed`), or regenerate. Exhausting the attempts without passing skips+logs the last
+    candidate (`critic_failed`). Exactly one ContentItem row is persisted per cell — the final
+    candidate with its verdict. Returns the summed cost of all generate + critic calls (cents)."""
     if job.product_id is None or job.channel_id is None or job.content_type is None:
         raise LookupError(
             f"generate job {job.id} missing product_id/channel_id/content_type "
@@ -172,9 +223,11 @@ def run_generate(job, session: Session, *, generate: GenerateFn = _real_generate
     brand_kit = BrandKit.model_validate_json(product.brand_json)
     recent_items = _recent_items(session, product.id, job.channel_id)
 
-    # Budget gate (mirrors brief.py): 0 = unset/unlimited. Pre-check blocks a run already over;
-    # then reserve the call's worst-case cost so a small remaining budget can't be blown past.
+    # Budget gate (mirrors brief.py): 0 = unset/unlimited. Pre-check blocks a run already over; then
+    # reserve one full generate+critic pass before each attempt so a small remaining budget can't be
+    # blown past — and a regeneration that no longer fits is dropped rather than overspending.
     budget = product.token_budget_cents_month
+    remaining: int | None = None
     if budget > 0:
         spent = month_to_date_cost_cents(session, product.id, _utcnow())
         if spent >= budget:
@@ -182,44 +235,66 @@ def run_generate(job, session: Session, *, generate: GenerateFn = _real_generate
                 f"product {product.id} over monthly token budget ({spent} >= {budget} cents)"
             )
         remaining = budget - spent
-        max_out = (
-            GEN_BLOG_MAX_TOKENS
-            if job.content_type == ContentType.BLOG.value
-            else GEN_SOCIAL_MAX_TOKENS
-        )
-        est_input = _reservation_input_estimate(
-            product.name, brief, product.brand_json, recent_items
-        )
-        reserve = cost_cents(GEN_MODEL, est_input, max_out)
-        if reserve > remaining:
-            raise RuntimeError(
-                f"insufficient budget to reserve for generation for product {product.id} "
-                f"(need ~{reserve}, have {remaining} cents)"
-            )
+    reserve_per_attempt = _reserve_one_attempt(
+        product.name, brief, product.brand_json, recent_items, job.content_type
+    )
 
-    gen, cost = generate(product, brief, brand_kit, job.content_type, recent_items)
+    total_cost = 0
+    final_gen: Generated | None = None
+    final_verdict: CriticVerdict | None = None
+    status: ContentItemStatus | None = None
+    for _attempt in range(1 + settings.critic_max_regenerations):
+        if remaining is not None and total_cost + reserve_per_attempt > remaining:
+            if (
+                final_gen is None
+            ):  # can't even afford the first pass — fail loudly (no partial spend)
+                raise RuntimeError(
+                    f"insufficient budget to reserve a generate+critic pass for product "
+                    f"{product.id} (need ~{reserve_per_attempt}, have {remaining} cents)"
+                )
+            break  # can't afford another regeneration → keep the last (low-scoring) candidate
+        gen, gen_cost = generate(product, brief, brand_kit, job.content_type, recent_items)
+        total_cost += gen_cost
+        verdict, critic_cost = critique(product, brand_kit, job.content_type, gen)
+        total_cost += critic_cost
+        final_gen, final_verdict = gen, verdict
+        if not verdict.safety_pass:  # AC: hard block, no regeneration
+            status = ContentItemStatus.GUARD_FAILED
+            break
+        if verdict.score >= settings.critic_score_threshold:  # AC: passed the quality bar
+            status = ContentItemStatus.CRITIC_PASSED
+            break
+        # low score → the loop falls through and regenerates if an attempt (and budget) remains
 
+    if status is None:  # exhausted attempts / budget-stopped without passing → skip+log
+        status = ContentItemStatus.CRITIC_FAILED
+
+    # final_gen/final_verdict are always set here: the only path that runs no attempt raises above.
+    assert final_gen is not None and final_verdict is not None
     session.add(
         ContentItem(
             product_id=product.id,
             channel_id=job.channel_id,
             content_type=job.content_type,
-            status=ContentItemStatus.GENERATED,
-            title=gen.title,
-            body=gen.body,
-            meta_json=json.dumps(gen.meta),
+            status=status,
+            title=final_gen.title,
+            body=final_gen.body,
+            meta_json=json.dumps(final_gen.meta),
+            critic_score=final_verdict.score,
+            critic_notes=final_verdict.notes,
         )
     )
     # No commit here: the worker commits the content item atomically with the job's DONE status +
     # token_cost_cents (committing early would let a crash requeue the job and double-spend).
-    return cost
+    return total_cost
 
 
-# Indirection so tests can drive the full enqueue → run_due_jobs path with a stub generator
-# (no network), while production uses the real LLM implementation.
+# Indirection so tests can drive the full enqueue → run_due_jobs path with stub generate + critic
+# (no network), while production uses the real LLM implementations.
 _GENERATE: GenerateFn = _real_generate
+_CRITIQUE: CritiqueFn = _real_critique
 
 
 @handler("generate")
 def _generate_handler(job, session: Session) -> int:
-    return run_generate(job, session, generate=_GENERATE)
+    return run_generate(job, session, generate=_GENERATE, critique=_CRITIQUE)

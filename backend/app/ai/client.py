@@ -41,6 +41,9 @@ GEN_MODEL = "claude-opus-4-8"  # content generators — social + blog (S4.2)
 GEN_SOCIAL_MAX_TOKENS = 1000  # output cap for one social post (also the budget-reservation ceiling)
 GEN_BLOG_MAX_TOKENS = 4000  # output cap for one SEO blog article (also the reservation ceiling)
 
+CRITIC_MODEL = "claude-haiku-4-5"  # S4.3 critic — different tier than the generator (§8.2/FR-22)
+CRITIC_MAX_TOKENS = 600  # output cap for the critic verdict (also the budget-reservation ceiling)
+
 
 class ICP(BaseModel):
     segment: str
@@ -174,6 +177,16 @@ class BlogArticle(BaseModel):
     meta_description: str = Field(min_length=1)
     body: str = Field(min_length=1)  # markdown
     pillar: str = Field(min_length=1)
+
+
+class CriticVerdict(BaseModel):
+    """The single critic+safety call's verdict (S4.3 / TECH_SPEC §8.2). One call returns both the
+    quality score and the safety decision — not two passes. `safety_pass=False` hard-blocks;
+    `score < threshold` triggers regeneration."""
+
+    score: float = Field(ge=0.0, le=1.0)  # overall quality: on-brand, useful, non-spammy
+    safety_pass: bool  # False → unsafe/policy-violating/misleading → hard block
+    notes: str  # brief actionable rationale (persisted for the human spot-check + regeneration log)
 
 
 def build_client() -> anthropic.Anthropic:
@@ -585,3 +598,51 @@ def generate_blog_article(
         raise RuntimeError(f"blog generation returned nothing (stop_reason={response.stop_reason})")
     cost = cost_cents(GEN_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return article, cost
+
+
+def critique_content(
+    client: anthropic.Anthropic,
+    product_name: str,
+    brand_kit: BrandKit,
+    content_type: str,
+    title: str | None,
+    body: str,
+) -> tuple[CriticVerdict, int]:
+    """One critic+safety call on a generated item (S4.3). Returns (verdict, cost_cents).
+
+    A *different* tier than the generator (haiku vs opus) so the reviewer doesn't share the writer's
+    blind spots. Merged quality + safety in a single call per §8.2 ("not two passes")."""
+    voice = (
+        "; ".join(f"{d.descriptor}: {d.guidance}" for d in brand_kit.voice_descriptors) or "(none)"
+    )
+    heading = f"Title: {title}\n" if title else ""
+    user = (
+        f"Product: {product_name}\n"
+        f"Brand tone: {brand_kit.tone}\n"
+        f"Brand voice: {voice}\n"
+        f"Content type: {content_type}\n\n"
+        f"{heading}Content to review:\n{body}\n\n"
+        "Score this content 0.0-1.0 on overall quality: is it on-brand for the voice, genuinely "
+        "useful to the audience, and NOT spammy, generic, or repetitive? Then decide safety: set "
+        "safety_pass=false if it is misleading, makes unsupported claims, violates a platform's "
+        "content policy, or reads as spam/manipulation. Give brief, actionable notes."
+    )
+    response = client.messages.parse(
+        model=CRITIC_MODEL,
+        max_tokens=CRITIC_MAX_TOKENS,
+        system=(
+            "You are an independent content critic and safety reviewer for a SaaS marketing "
+            "engine. Judge quality honestly and flag anything unsafe, misleading, or spammy. "
+            "Return a calibrated score, a safety decision, and concise notes."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=CriticVerdict,
+    )
+    verdict = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if verdict is None:  # refusal or unparsable — surface, don't silently pass or block
+        raise RuntimeError(f"critic returned nothing (stop_reason={response.stop_reason})")
+    cost = cost_cents(CRITIC_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return verdict, cost
