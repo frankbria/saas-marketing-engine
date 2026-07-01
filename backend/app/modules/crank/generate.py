@@ -29,6 +29,7 @@ items in any non-terminal-failure state; this narrows to published content once 
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -58,6 +59,7 @@ from app.modules.strategy.brief import month_to_date_cost_cents
 from app.worker import handler
 
 RECENT_LIMIT = 5  # how many recent items to feed the generator for novelty
+SPOT_CHECK_RATE = 0.10  # S4.9: random share of items flagged for async review (on top of the first)
 _RECENT_BODY_CHARS = 500  # cap each recent item's text so the novelty block stays bounded
 _SUPPORTED_CONTENT_TYPES = frozenset({ContentType.SOCIAL.value, ContentType.BLOG.value})
 # Fixed system + user-instruction text the generators always send (see ai/client.py), on top of the
@@ -84,6 +86,17 @@ CritiqueFn = Callable[[Product, BrandKit, str, Generated], tuple[CriticVerdict, 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _is_first_for_channel(session: Session, product_id: int, channel_id: int) -> bool:
+    """True when no content item has yet been produced for this (product, channel) — its inaugural
+    item, which S4.9 always flags for spot-check."""
+    existing = session.exec(
+        select(ContentItem.id)
+        .where(ContentItem.product_id == product_id, ContentItem.channel_id == channel_id)
+        .limit(1)
+    ).first()
+    return existing is None
 
 
 def _recent_items(session: Session, product_id: int, channel_id: int) -> list[str]:
@@ -195,6 +208,7 @@ def run_generate(
     *,
     generate: GenerateFn = _real_generate,
     critique: CritiqueFn = _real_critique,
+    sample: Callable[[], float] = random.random,
 ) -> int:
     """Generate → critic+safety gate → persist one content item for the fanned-out cell (S4.2+S4.3).
 
@@ -285,6 +299,12 @@ def run_generate(
     if status is None:  # exhausted attempts / budget-stopped without passing → skip+log
         status = ContentItemStatus.CRITIC_FAILED
 
+    # S4.9: flag for async review — the channel's first item always, plus a random SPOT_CHECK_RATE
+    # share. Set once here at creation; it never touches `status`, so it can't block publishing.
+    spot_check = (
+        _is_first_for_channel(session, product.id, job.channel_id) or sample() < SPOT_CHECK_RATE
+    )
+
     # final_gen/final_verdict are always set here: the only path that runs no attempt raises above.
     assert final_gen is not None and final_verdict is not None
     session.add(
@@ -299,6 +319,7 @@ def run_generate(
             critic_score=final_verdict.score,
             critic_notes=final_verdict.notes,
             error=guard_error,
+            spot_check=spot_check,
         )
     )
     # No commit here: the worker commits the content item atomically with the job's DONE status +

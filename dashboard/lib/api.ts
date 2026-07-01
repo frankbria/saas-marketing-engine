@@ -135,6 +135,8 @@ export interface ContentItem {
   body: string
   external_url: string | null
   published_at: string | null
+  // S4.9: flagged for async human review (first item per channel + a random 10%). Never blocks publish.
+  spot_check: boolean
   created_at: string
 }
 
@@ -292,6 +294,10 @@ export const setChannelPaused = (
 // S4.7: published/retracted items for the retract list (newest first).
 export const listPublishedContent = (productId: number) =>
   apiFetch<ContentItem[]>(`/content/${productId}`)
+
+// S4.9: async spot-check review queue — flagged items (first per channel + random 10%), newest first.
+export const getSpotCheckQueue = (productId: number) =>
+  apiFetch<ContentItem[]>(`/content/${productId}/spot-check`)
 
 // S4.7: retract a published item — deletes the remote post and flips status to `retracted`.
 export const retractContent = (productId: number, itemId: number) =>
