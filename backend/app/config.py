@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     # Bounded so a bad deploy value fails loudly at startup rather than disabling/breaking the gate
     # (threshold outside [0,1] would silently pass-all or skip-all; a negative count runs nothing).
     critic_score_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    critic_max_regenerations: int = Field(default=2, ge=0)
+    # Upper-bounded too: even though the per-attempt budget reservation caps real spend, a bad
+    # config value like 100000 would still let one item fan out to absurdly many LLM calls.
+    critic_max_regenerations: int = Field(default=2, ge=0, le=10)
 
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.

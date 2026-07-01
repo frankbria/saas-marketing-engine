@@ -225,6 +225,8 @@ def test_critic_settings_reject_out_of_range_config():
         Settings(critic_score_threshold=-0.1)
     with pytest.raises(ValidationError):
         Settings(critic_max_regenerations=-1)
+    with pytest.raises(ValidationError):
+        Settings(critic_max_regenerations=100000)  # absurdly high → arbitrarily many LLM calls
 
 
 @pytest.mark.skipif(settings.anthropic_api_key is None, reason="requires SME_ANTHROPIC_API_KEY")

@@ -14,6 +14,13 @@ pass, the LLM work injected (`generate=`/`critique=`) so the worker wiring + per
 testable without a network call, and no commit here — the worker commits the row with the job's
 DONE status + summed cost.
 
+Known limitation (shared, not S4.3-specific): if a call raises *after* a billed response (e.g. the
+critic returns an unparsable response mid-loop), the handler raises and the worker's retry-rollback
+records none of the already-spent cost, so a retry re-spends. This is the same non-idempotent-cost
+limitation documented for S1.1/S1.2; the proper fix is an incremental cost ledger on the worker, not
+here. Bounded to the worker's MAX_ATTEMPTS retries, and the monthly budget pre-check caps cumulative
+runaway on subsequent runs.
+
 **Novelty (AC):** recent items already on the channel are fetched and fed into the generator prompt
 so it avoids near-duplicates. Pre-S4.5 nothing is `published` yet, so "recent" is the most-recent
 items in any non-terminal-failure state; this narrows to published content once S4.5 lands.
