@@ -122,9 +122,11 @@ def publish_scheduled(
     published: list[ContentItem] = []
     for item in due:
         channel = session.get(Channel, item.channel_id)
-        # Kill switch / disabled channel checked immediately before publish (§7, S4.6): skip and
-        # leave the item `scheduled` so it resumes when the channel is re-enabled.
-        if channel is None or not channel.enabled or channel.paused:
+        # Kill switch / disabled / autonomy-off checked immediately before publish (§7, S4.6): skip
+        # and leave the item `scheduled` so it resumes when the channel is re-enabled. `autonomous`
+        # is re-checked here (not just at pace time) so turning autonomy off after scheduling halts
+        # the publish too.
+        if channel is None or not channel.enabled or not channel.autonomous or channel.paused:
             continue
         product = session.get(Product, item.product_id)
         if product is None:  # orphaned item — permanent, don't retry forever

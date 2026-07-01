@@ -302,6 +302,23 @@ def test_publish_paused_channel_kill_switch(session):
     assert it.status == ContentItemStatus.SCHEDULED
 
 
+def test_publish_autonomy_off_after_scheduling_halts_publish(session):
+    # pace_content only schedules autonomous channels, but publish must re-check: turning autonomy
+    # off after an item is scheduled halts the publish (item stays scheduled).
+    p = _product(session)
+    c = _channel(session, p.id)
+    it = _scheduled_item(session, p, c)
+    c.autonomous = False
+    session.add(c)
+    session.commit()
+    stub = StubAdapter()
+
+    assert publish_scheduled(session, NOW, adapter_for=lambda t: stub) == []
+    assert stub.calls == []
+    session.refresh(it)
+    assert it.status == ContentItemStatus.SCHEDULED
+
+
 def test_publish_one_failure_does_not_block_siblings(session):
     p = _product(session)
     c = _channel(session, p.id)
