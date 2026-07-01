@@ -53,6 +53,7 @@ from app.config import settings
 from app.models import ContentItem, Product, StrategyBrief
 from app.models.content_item import _TERMINAL_FAILURE, ContentItemStatus
 from app.modules.crank.crank import ContentType
+from app.modules.crank.guard import check_content
 from app.modules.strategy.brief import month_to_date_cost_cents
 from app.worker import handler
 
@@ -250,6 +251,7 @@ def run_generate(
     final_gen: Generated | None = None
     final_verdict: CriticVerdict | None = None
     status: ContentItemStatus | None = None
+    guard_error: str | None = None  # S4.4 deterministic-guard failure reason, persisted on the row
     for _attempt in range(1 + settings.critic_max_regenerations):
         if remaining is not None and total_cost + reserve_per_attempt > remaining:
             if (
@@ -269,7 +271,14 @@ def run_generate(
             status = ContentItemStatus.GUARD_FAILED
             break
         if verdict.score >= settings.critic_score_threshold:  # AC: passed the quality bar
-            status = ContentItemStatus.CRITIC_PASSED
+            # S4.4: deterministic guard runs on the critic-approved candidate, independent of the
+            # LLM. A failure is a hard block (like safety_pass=False) — no regeneration, log + skip.
+            guard_error = check_content(gen.title, gen.body, brief, product)
+            status = (
+                ContentItemStatus.GUARD_FAILED
+                if guard_error is not None
+                else ContentItemStatus.CRITIC_PASSED
+            )
             break
         # low score → the loop falls through and regenerates if an attempt (and budget) remains
 
@@ -289,6 +298,7 @@ def run_generate(
             meta_json=json.dumps(final_gen.meta),
             critic_score=final_verdict.score,
             critic_notes=final_verdict.notes,
+            error=guard_error,
         )
     )
     # No commit here: the worker commits the content item atomically with the job's DONE status +

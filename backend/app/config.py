@@ -1,9 +1,23 @@
 """Application settings (pydantic-settings). Extended per phase as modules land."""
 
+import re
 from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# S4.4 deterministic guard: default blocklist (case-insensitive regex). Absolute guarantees and
+# compliance-risky claims a marketing safety net should never let reach real accounts. Override via
+# `SME_GUARD_BLOCKLIST` (comma-separated regex patterns).
+_DEFAULT_GUARD_BLOCKLIST = [
+    r"\bguarantee(?:d|s)?\b",
+    r"\brisk[\s-]?free\b",
+    r"\bno risk\b",
+    r"\bmiracle\b",
+    r"100\s*%\s*safe",
+    r"\bclinically proven\b",
+    r"\bcure(?:s|d)?\b",
+]
 
 
 class Settings(BaseSettings):
@@ -47,6 +61,10 @@ class Settings(BaseSettings):
     # config value like 100000 would still let one item fan out to absurdly many LLM calls.
     critic_max_regenerations: int = Field(default=2, ge=0, le=10)
 
+    # S4.4 deterministic guard: blocklist regex patterns (case-insensitive). CSV in the env var.
+    # Independent of the LLM critic — a non-LLM safety net (§8.2/FR-23).
+    guard_blocklist: Annotated[list[str], NoDecode] = list(_DEFAULT_GUARD_BLOCKLIST)
+
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.
     rate_limit_requests: int = 60
@@ -87,6 +105,24 @@ class Settings(BaseSettings):
         # pydantic-settings would otherwise JSON-decode the env value; accept plain CSV.
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+
+    @field_validator("guard_blocklist", mode="before")
+    @classmethod
+    def _split_blocklist_csv(cls, v: object) -> object:
+        if isinstance(v, str):
+            return [p.strip() for p in v.split(",") if p.strip()]
+        return v
+
+    @field_validator("guard_blocklist")
+    @classmethod
+    def _validate_blocklist_regex(cls, v: list[str]) -> list[str]:
+        # A bad regex must fail loudly at startup, not silently skip a guard pattern at runtime.
+        for pattern in v:
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"invalid guard_blocklist regex {pattern!r}: {e}") from e
         return v
 
 

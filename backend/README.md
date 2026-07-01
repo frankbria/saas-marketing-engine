@@ -144,6 +144,14 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   score, and critic notes. Injected `generate=`/`critique=` fns keep the handler testable without a
   network call. No commit here — the worker commits atomically with the job's DONE status + summed
   cost.
+- `modules/crank/guard.py` — the S4.4 **deterministic guard**, a non-LLM safety net run on the
+  critic-approved candidate before it can reach `critic_passed` (independent of the same-family
+  critic). `check_content(title, body, brief, product)` returns a failure reason (logged to
+  `content_item.error`) or `None`: a blocklist/regex check (`SME_GUARD_BLOCKLIST`, curated default of
+  guarantee/compliance red-flags) plus a **numeric claim-trace** requiring each `%`/`Nx`/`$`/large-
+  count claim to map to a *same-kind* fact in the brief/product (a `$99` price can't vouch for a
+  `99%` claim). A hit hard-blocks (`guard_failed`, no regeneration). Numeric-only by design — a
+  paranoid net that errs toward block+log for the async spot-check, not toward publishing.
 - `ai/client.py` additions — `SocialPost`, `BlogArticle`, and `CriticVerdict` structured-output
   models; `generate_social_post` / `generate_blog_article` using `claude-opus-4-8` (`GEN_MODEL`)
   with adaptive thinking and a novelty block; `critique_content` using `claude-haiku-4-5`
