@@ -100,6 +100,24 @@ def get_credential(
     return decrypt(cred.ciphertext) if cred else None
 
 
+def get_credential_expiry(
+    session: Session, product_id: int, key: str, *, channel_id: int | None = None
+) -> datetime | None:
+    """The latest secret's `expires_at` for (product_id, key, channel_id), or None if absent/unset.
+
+    Ciphertext is never touched — this reads only the expiry column, so it needs no decryption.
+    """
+    return session.exec(
+        select(Credential.expires_at)
+        .where(
+            Credential.product_id == product_id,
+            Credential.key == key,
+            Credential.channel_id == channel_id,
+        )
+        .order_by(Credential.id.desc())
+    ).first()
+
+
 # --- log redaction -----------------------------------------------------------
 
 _redaction_installed = False

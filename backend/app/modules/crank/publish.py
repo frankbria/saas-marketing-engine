@@ -24,11 +24,19 @@ from datetime import UTC, datetime, timedelta
 
 from sqlmodel import Session, col, select
 
-from app.channels.base import Retryable, get_adapter
+from app.channels.base import AuthFailure, Retryable, get_adapter
 from app.models import Channel, ContentItem, MetricEvent, MetricStage, Product
+from app.models.channel import ConnectState
 from app.models.content_item import ContentItemStatus
+from app.modules.alerts import raise_alert
 from app.modules.crank.crank import _cadence_seconds  # reuse the crank's cadence-window clamp
-from app.secrets.vault import get_credential
+from app.modules.crank.oauth_refresh import (
+    RefreshUnavailable,
+    is_self_managed_credential,
+    needs_refresh,
+    refresh_channel_token,
+)
+from app.secrets.vault import get_credential, get_credential_expiry
 
 
 def _spacing_seconds(window_seconds: int, daily_cap: int | None, batch_size: int) -> float:
@@ -68,7 +76,12 @@ def _last_scheduled_at(session: Session, channel_id: int) -> datetime | None:
 def pace_content(session: Session, now: datetime) -> list[ContentItem]:
     """Schedule every `critic_passed` item on an active channel. Returns the newly-scheduled."""
     channels = session.exec(
-        select(Channel).where(Channel.enabled, Channel.autonomous, ~Channel.paused)
+        select(Channel).where(
+            Channel.enabled,
+            Channel.autonomous,
+            ~Channel.paused,
+            Channel.connect_state != ConnectState.FAILED,  # dead-token channels don't accrue work
+        )
     ).all()
 
     scheduled: list[ContentItem] = []
@@ -102,12 +115,55 @@ def pace_content(session: Session, now: datetime) -> list[ContentItem]:
     return scheduled
 
 
+def _fence_channel(session, channel, product, now, error: str) -> None:
+    """S4.8 fail-safe: mark a channel `failed` (dead token) and fire an operator alert. Callers
+    leave the current item `scheduled` so it resumes once the channel is reconnected. Assumes the
+    caller has rolled back any partial work for the current item."""
+    channel.connect_state = ConnectState.FAILED
+    channel.updated_at = now
+    session.add(channel)
+    session.commit()
+    raise_alert(
+        "oauth_refresh_failed",
+        f"{channel.type.value} token failed; halting publishes until reconnected",
+        product_id=product.id,
+        channel_id=channel.id,
+        error=error,
+    )
+
+
+def _refresh_if_needed(session, product, channel, credential_key, now, refresh) -> bool:
+    """Refresh the channel's OAuth token if it is near expiry. Returns True if the channel is safe
+    to publish, False if a refresh failure fenced it off (`connect_state=failed` + alert)."""
+    expires_at = get_credential_expiry(session, product.id, credential_key, channel_id=channel.id)
+    if not needs_refresh(expires_at, now):
+        return True
+    # A self-managed credential (structured blob, e.g. Reddit's PRAW kwargs) is refreshed by the
+    # provider's own client — we hold no short-lived token of ours to replace, so proceed to publish
+    # and let that client refresh under the hood. Only bare-token credentials are ours to refresh.
+    current = get_credential(session, product.id, credential_key, channel_id=channel.id)
+    if current and is_self_managed_credential(current):
+        return True
+    try:
+        refresh(session, product, channel, now)
+        return True
+    except RefreshUnavailable:
+        # No refresh handler configured for this provider — we can't proactively refresh, so proceed
+        # and let the reactive AuthFailure fence catch the token if it's actually dead. Fencing here
+        # would needlessly halt a channel whose token may still be valid.
+        return True
+    except Exception as exc:  # noqa: BLE001 — a real refresh failure fails the channel safe (S4.8)
+        session.rollback()
+        _fence_channel(session, channel, product, now, str(exc))
+        return False
+
+
 def publish_scheduled(
-    session: Session, now: datetime, *, adapter_for=get_adapter
+    session: Session, now: datetime, *, adapter_for=get_adapter, refresh=refresh_channel_token
 ) -> list[ContentItem]:
     """Publish every `scheduled` item whose time has come. Returns the items that went `published`.
 
-    `adapter_for` is injectable so tests drive the full pass with a stub adapter (no network),
+    `adapter_for` and `refresh` are injectable so tests drive the full pass with no network,
     mirroring the `generate=`/`critique=` seam in the generate handler."""
     due = session.exec(
         select(ContentItem)
@@ -122,11 +178,17 @@ def publish_scheduled(
     published: list[ContentItem] = []
     for item in due:
         channel = session.get(Channel, item.channel_id)
-        # Kill switch / disabled / autonomy-off checked immediately before publish (§7, S4.6): skip
-        # and leave the item `scheduled` so it resumes when the channel is re-enabled. `autonomous`
-        # is re-checked here (not just at pace time) so turning autonomy off after scheduling halts
-        # the publish too.
-        if channel is None or not channel.enabled or not channel.autonomous or channel.paused:
+        # Kill switch / disabled / autonomy-off / dead-token (§7, S4.6, S4.8) checked immediately
+        # before publish: skip and leave the item `scheduled` so it resumes once the channel
+        # recovers. `autonomous` is re-checked here (not just at pace time) so turning autonomy off
+        # after scheduling halts the publish too.
+        if (
+            channel is None
+            or not channel.enabled
+            or not channel.autonomous
+            or channel.paused
+            or channel.connect_state == ConnectState.FAILED
+        ):
             continue
         product = session.get(Product, item.product_id)
         if product is None:  # orphaned item — permanent, don't retry forever
@@ -138,6 +200,14 @@ def publish_scheduled(
 
         try:
             adapter = adapter_for(channel.type)
+            # Proactive OAuth refresh (S4.8): if this channel's token is within the refresh buffer
+            # of expiry, refresh it before use. A failed refresh fails the channel safe — mark it
+            # `failed`, fire an alert, and halt (leave the item `scheduled`) so a dead token never
+            # silently kills the channel mid-window. Later due items then skip via the guard above.
+            if adapter.credential_key and not _refresh_if_needed(
+                session, product, channel, adapter.credential_key, now, refresh
+            ):
+                continue
             creds = (
                 get_credential(session, product.id, adapter.credential_key, channel_id=channel.id)
                 if adapter.credential_key
@@ -147,6 +217,12 @@ def publish_scheduled(
         except Retryable:
             # Transient — leave `scheduled`, retry next tick. Nothing was committed for this item.
             session.rollback()
+            continue
+        except AuthFailure as exc:
+            # Dead/revoked token on a self-managed provider (S4.8): fence the whole channel and
+            # leave the item `scheduled` so it resumes on reconnect — not a per-item publish_failed.
+            session.rollback()
+            _fence_channel(session, channel, product, now, str(exc))
             continue
         except Exception as exc:  # noqa: BLE001 — permanent failure: record + move on (isolation)
             session.rollback()

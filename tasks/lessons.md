@@ -126,3 +126,18 @@ catches (codex + CodeRabbit), both on the same theme — an already-executed ext
 before the call (fail-closed on NULL), do the irreversible effect *before* the DB status flip, keep the
 adapter delete idempotent so a failed commit is a safe retry, and translate each engine error to a
 distinct status code so the dashboard shows why.
+
+## S4.8 — OAuth refresh: credential-shape contract + "config gap ≠ failure"
+**Context:** proactive OAuth refresh + fail-safe (#26). Cross-family `codex` review oscillated over
+five rounds on the same seam; the root cause was a *pre-existing* contract mismatch, not the new code.
+**Pattern:** the `/connect` endpoint stores a bare access-token under `{type}_oauth`, but the Reddit
+adapter consumes `reddit_oauth` as a JSON PRAW-kwargs blob. A generic bare-token refresher that writes
+back a bare token therefore silently breaks the adapter. Resolution: (1) classify credentials —
+structured/self-managed (PRAW self-refreshes → skip proactive refresh; catch death reactively via a
+dedicated `AuthFailure` at publish) vs owned bare tokens (our OAuth2 grant refreshes them); (2) treat
+"no refresh handler registered" as a *config gap* (`RefreshUnavailable` → proceed, rely on reactive
+fence) rather than a *failure* (→ fence), so a missing endpoint never halts a possibly-live channel.
+**How to apply:** when adding a mechanism over an existing store, first confirm the *shape contract*
+the consumer expects (grep the adapter's parse). Distinguish "can't act (unconfigured)" from "acted
+and failed" — only the latter should trip a destructive fail-safe. And a 403 ≠ dead token: reserve
+channel-level fencing for 401/OAuth; a 403 (permission/policy) stays a per-item failure.

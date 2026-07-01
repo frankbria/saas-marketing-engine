@@ -24,6 +24,13 @@ class Retryable(Exception):
     `scheduled` and retries next tick rather than marking it `publish_failed`."""
 
 
+class AuthFailure(Exception):
+    """A dead/revoked OAuth credential surfaced at publish time (e.g. a self-managed refresh token
+    the provider's client refreshes internally). The publish pass fences the whole channel
+    (`connect_state=failed` + alert) and leaves the item `scheduled` so it resumes on reconnect —
+    the S4.8 fail-safe for providers whose token we don't refresh ourselves."""
+
+
 @dataclass
 class PublishResult:
     external_url: str

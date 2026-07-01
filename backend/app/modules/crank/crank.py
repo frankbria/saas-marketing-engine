@@ -21,7 +21,7 @@ from enum import StrEnum
 
 from sqlmodel import Session, select
 
-from app.models import Channel, ChannelType, JobRun, LifecycleState, Product
+from app.models import Channel, ChannelType, ConnectState, JobRun, LifecycleState, Product
 from app.worker import enqueue, handler
 
 WEEKLY_SECONDS = 7 * 24 * 3600
@@ -85,6 +85,7 @@ def _run_crank(job: JobRun, session: Session) -> int:
             Channel.enabled,
             Channel.autonomous,
             ~Channel.paused,  # per-channel kill switch (S4.6)
+            Channel.connect_state != ConnectState.FAILED,  # dead-token channel (S4.8)
         )
     ).all()
 
