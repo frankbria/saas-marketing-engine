@@ -219,8 +219,30 @@ export function ChannelSetup({
                           type="button"
                           variant="default"
                           disabled={busy}
-                          onClick={() => {
-                            // Full-page navigation: the provider (and its callback) own the tab.
+                          onClick={async (e) => {
+                            // Seed any typed client credentials first, so hitting Connect without a
+                            // prior "Save" doesn't redirect to an authorize step that 400s for
+                            // missing creds. Then full-page navigate (the provider owns the tab).
+                            const form = e.currentTarget.closest("form")
+                            const data = new FormData(form!)
+                            const clientId = String(data.get("client_id") ?? "").trim()
+                            const clientSecret = String(data.get("client_secret") ?? "").trim()
+                            if (clientId && clientSecret) {
+                              setBusy(true)
+                              setError(null)
+                              try {
+                                await seedClientCredentials(
+                                  productId,
+                                  channel.id,
+                                  clientId,
+                                  clientSecret
+                                )
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : "Request failed")
+                                setBusy(false)
+                                return
+                              }
+                            }
                             window.location.href = authorizeUrl(productId, channel.id)
                           }}
                         >

@@ -2,6 +2,7 @@
 
 import re
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -106,6 +107,21 @@ class Settings(BaseSettings):
     # Plain str (non-sensitive); localhost dev defaults matching the v1 ports above.
     oauth_redirect_base_url: str = "http://localhost:8010"
     dashboard_base_url: str = "http://localhost:3010"
+
+    @field_validator("oauth_redirect_base_url")
+    @classmethod
+    def _require_https_off_localhost(cls, v: str) -> str:
+        # OAuth `code`/`state` ride this origin's callback; plaintext http off localhost would
+        # expose them on the wire. Allow http only for loopback (dev); require https otherwise —
+        # fail loud at startup rather than silently shipping an insecure redirect.
+        host = urlsplit(v).hostname or ""
+        is_loopback = host in ("localhost", "127.0.0.1", "::1")
+        if v.startswith("http://") and not is_loopback:
+            raise ValueError(
+                f"oauth_redirect_base_url must use https off localhost (got {v!r}) — OAuth "
+                "code/state would otherwise cross the network in plaintext"
+            )
+        return v
 
     @field_validator("cors_origins", mode="before")
     @classmethod

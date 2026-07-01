@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.models import ChannelType
 from app.modules.crank import oauth_refresh
 from app.modules.crank.oauth_refresh import (
     OWNED_TOKEN_PROVIDERS,
@@ -97,10 +98,20 @@ def test_parse_token_response_missing_token_raises():
 # ---- S4.8.2: provider registry + authorize URL ------------------------------------------
 
 
-def test_token_endpoints_derived_from_registry():
-    # The refresh seam is derived from the provider registry, so registering a provider is a
-    # one-line edit that also makes it refreshable. v1 ships neither (X/IG/YT out of scope).
-    assert TOKEN_ENDPOINTS == {t: p.token_url for t, p in OWNED_TOKEN_PROVIDERS.items()}
+def test_token_endpoint_reads_registry_as_single_source(monkeypatch):
+    # A registered provider is refreshable straight from the registry — no separate TOKEN_ENDPOINTS
+    # edit, so the two can't drift. v1 ships neither dict populated (X/IG/YT out of scope).
+    assert TOKEN_ENDPOINTS == {}
+    assert oauth_refresh.token_endpoint(ChannelType.X) is None
+    monkeypatch.setitem(OWNED_TOKEN_PROVIDERS, ChannelType.X, _PROVIDER)
+    assert oauth_refresh.token_endpoint(ChannelType.X) == _PROVIDER.token_url
+
+
+def test_token_endpoint_override_wins(monkeypatch):
+    # An explicit TOKEN_ENDPOINTS entry (edge provider / test injection) takes precedence.
+    monkeypatch.setitem(OWNED_TOKEN_PROVIDERS, ChannelType.X, _PROVIDER)
+    monkeypatch.setitem(TOKEN_ENDPOINTS, ChannelType.X, "https://override.test/token")
+    assert oauth_refresh.token_endpoint(ChannelType.X) == "https://override.test/token"
 
 
 def test_build_authorize_url_has_scopes_state_and_redirect():

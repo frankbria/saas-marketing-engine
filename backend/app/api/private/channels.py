@@ -284,20 +284,32 @@ def seed_client_credentials(
     )
 
 
+def _require_client_credentials(
+    session: Session, product_id: int, channel_id: int, prefix: str
+) -> tuple[str, str]:
+    """Both seeded OAuth-app credentials, or 400. Checked *before* the authorize redirect too (not
+    just at callback) so a half-seeded channel fails early — never after the operator has spent the
+    one-time consent code."""
+    client_id = vault.get_credential(
+        session, product_id, f"{prefix}_client_id", channel_id=channel_id
+    )
+    client_secret = vault.get_credential(
+        session, product_id, f"{prefix}_client_secret", channel_id=channel_id
+    )
+    if not (client_id and client_secret):
+        raise HTTPException(
+            status_code=400, detail=f"seed {prefix} client credentials before connecting"
+        )
+    return client_id, client_secret
+
+
 @router.get("/{product_id}/{channel_id}/authorize")
 def authorize_channel(product_id: int, channel_id: int, session: SessionDep) -> RedirectResponse:
     """Begin the OAuth dance: redirect the operator's browser to the provider's consent screen with
     the seeded client id, requested scopes, our callback `redirect_uri`, and a signed `state`."""
     channel = _require_channel(session, product_id, channel_id)
     provider = _require_owned_provider(channel)
-    client_id = vault.get_credential(
-        session, product_id, f"{channel.type.value}_client_id", channel_id=channel_id
-    )
-    if not client_id:
-        raise HTTPException(
-            status_code=400,
-            detail=f"seed {channel.type.value} client credentials before connecting",
-        )
+    client_id, _ = _require_client_credentials(session, product_id, channel_id, channel.type.value)
     url = build_authorize_url(
         provider,
         client_id,
@@ -322,25 +334,24 @@ def oauth_callback(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     prefix = channel.type.value
-    client_id = vault.get_credential(
-        session, product_id, f"{prefix}_client_id", channel_id=channel_id
-    )
-    client_secret = vault.get_credential(
-        session, product_id, f"{prefix}_client_secret", channel_id=channel_id
-    )
-    if not (client_id and client_secret):
-        raise HTTPException(
-            status_code=400, detail=f"seed {prefix} client credentials before connecting"
-        )
+    client_id, client_secret = _require_client_credentials(session, product_id, channel_id, prefix)
 
-    access_token, refresh_token, expires_at = exchange_authorization_code(
-        provider,
-        code,
-        _callback_redirect_uri(product_id, channel_id),
-        client_id,
-        client_secret,
-        datetime.now(UTC),
-    )
+    try:
+        access_token, refresh_token, expires_at = exchange_authorization_code(
+            provider,
+            code,
+            _callback_redirect_uri(product_id, channel_id),
+            client_id,
+            client_secret,
+            datetime.now(UTC),
+        )
+    except Exception as exc:
+        # Provider/network/parse failure — translate at the boundary (never leak provider detail)
+        # so the channel stays `pending` and the operator gets a clean retry, not an opaque 500.
+        raise HTTPException(status_code=502, detail="OAuth token exchange failed") from exc
+
+    # Stage both tokens and the connect/checklist flip in one transaction (commit=False) so a
+    # failure mid-write can't leave a half-connected channel — `_mark_connected` commits atomically.
     vault.put_credential(
         session,
         product_id,
@@ -348,10 +359,16 @@ def oauth_callback(
         access_token,
         channel_id=channel_id,
         expires_at=expires_at,
+        commit=False,
     )
     if refresh_token:
         vault.put_credential(
-            session, product_id, f"{prefix}_oauth_refresh", refresh_token, channel_id=channel_id
+            session,
+            product_id,
+            f"{prefix}_oauth_refresh",
+            refresh_token,
+            channel_id=channel_id,
+            commit=False,
         )
     _mark_connected(session, product_id, channel)
 

@@ -909,3 +909,5 @@ def test_registered_provider_grant_failure_fences_channel(session, monkeypatch, 
     session.refresh(it)
     assert it.status == ContentItemStatus.SCHEDULED  # halted, resumes on reconnect
     assert any("oauth_refresh_failed" in r.getMessage() for r in caplog.records)
+    # the fail-safe alert must not leak the seeded refresh token / client secret into the log
+    assert not any("rtok" in r.getMessage() or "csec" in r.getMessage() for r in caplog.records)

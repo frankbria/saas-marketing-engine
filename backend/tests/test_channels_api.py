@@ -429,6 +429,71 @@ def test_callback_exchanges_code_stores_tokens_and_connects(ctx, monkeypatch):
         assert item.status.value == "done"  # oauth checklist auto-completed
 
 
+def test_callback_exchange_failure_keeps_channel_pending(ctx, monkeypatch):
+    """A provider/network failure during code exchange returns a controlled 502 (no provider
+    detail), leaves the channel `pending`, and writes no tokens — the operator can retry cleanly."""
+    c, engine = ctx
+    _register_x(monkeypatch)
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
+    c.post(
+        f"/api/private/channels/{pid}/{cid}/credentials",
+        json={"client_id": "app-id", "client_secret": "app-secret"},
+    )
+
+    def boom(*a):
+        raise RuntimeError("invalid_grant: provider said no")
+
+    monkeypatch.setattr(oauth_refresh, "_post_token_exchange", boom)
+
+    state = oauth_refresh.mint_state(pid, cid)
+    resp = c.get(
+        f"/api/private/channels/{pid}/{cid}/callback",
+        params={"code": "the-code", "state": state},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 502
+    assert "invalid_grant" not in resp.text  # provider detail never leaked to the client
+    with Session(engine) as s:
+        assert s.get(Channel, cid).connect_state == ConnectState.PENDING
+        assert vault.get_credential(s, pid, "x_oauth", channel_id=cid) is None
+        assert vault.get_credential(s, pid, "x_oauth_refresh", channel_id=cid) is None
+
+
+def test_oauth_flow_never_logs_secrets(ctx, monkeypatch, caplog):
+    """AC4: the seeded secret, the auth `code`/`state`, and the exchanged tokens must never appear
+    in any log line across seed → authorize → callback."""
+    c, engine = ctx
+    _register_x(monkeypatch)
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
+    monkeypatch.setattr(
+        oauth_refresh,
+        "_post_token_exchange",
+        lambda *a: {"access_token": "SECRET-AT", "refresh_token": "SECRET-RT", "expires_in": 60},
+    )
+
+    with caplog.at_level("DEBUG"):
+        c.post(
+            f"/api/private/channels/{pid}/{cid}/credentials",
+            json={"client_id": "app-id", "client_secret": "SECRET-CS"},
+        )
+        r = c.get(f"/api/private/channels/{pid}/{cid}/authorize", follow_redirects=False)
+        state = parse_qs(r.headers["location"].split("?", 1)[1])["state"][0]
+        c.get(
+            f"/api/private/channels/{pid}/{cid}/callback",
+            params={"code": "AUTHCODE-123", "state": state},
+            follow_redirects=False,
+        )
+
+    # Scope to our own loggers — the httpx TestClient logs the request URL (query string included),
+    # which is a harness artifact, not application logging. In prod, access-log hygiene is deploy
+    # config; here we assert *our* code never emits the secrets.
+    logs = " ".join(rec.getMessage() for rec in caplog.records if rec.name.startswith("app"))
+    for secret in ("SECRET-CS", "SECRET-AT", "SECRET-RT", "AUTHCODE-123", state):
+        assert secret not in logs
+
+
 def test_callback_rejects_tampered_state_400(ctx, monkeypatch):
     c, engine = ctx
     _register_x(monkeypatch)

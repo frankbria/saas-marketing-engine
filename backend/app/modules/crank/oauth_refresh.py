@@ -16,11 +16,12 @@ use, once the token is within `REFRESH_BUFFER` of expiry — whether it must be 
 
 The network boundary (`_post_token_refresh`) is module-level so tests inject it (matching the
 `_build_reddit` seam); the pure parts (`needs_refresh`, `parse_token_response`) are unit-tested. A
-provider is refreshable once its token endpoint is registered in `TOKEN_ENDPOINTS`.
+provider is refreshable once it's in the `OWNED_TOKEN_PROVIDERS` registry (see `token_endpoint`).
 
-S4.8.2 adds the *acquisition* half — a provider registry (`OWNED_TOKEN_PROVIDERS`, which also feeds
-`TOKEN_ENDPOINTS`), an `authorization_code` exchange behind the same injectable seam, and a signed
-expiring `state` — consumed by the authorize/callback endpoints in `api/private/channels.py`.
+S4.8.2 adds the *acquisition* half — the `OWNED_TOKEN_PROVIDERS` registry (single source of truth
+for a provider's endpoints; `token_endpoint` reads it so refresh can't drift from it), an
+`authorization_code` exchange behind the same injectable seam, and a signed expiring `state` —
+consumed by the authorize/callback endpoints in `api/private/channels.py`.
 
 ponytail: stdlib `urllib` (no new HTTP dependency); `state` reuses the vault Fernet key (no new
 table/session store). Live X/Instagram/YouTube provider entries remain out of scope (TECH_SPEC §7).
@@ -75,12 +76,21 @@ class OAuthProvider:
 # machinery is verified end-to-end in tests via an injected provider (`monkeypatch.setitem`).
 OWNED_TOKEN_PROVIDERS: dict[ChannelType, OAuthProvider] = {}
 
-# OAuth2 token endpoints for providers whose bare access token we hold and refresh ourselves,
-# derived from the registry so registering a provider above makes it refreshable (S4.8) with no
-# second edit. Self-managed providers (Reddit via PRAW) are absent — their client refreshes itself.
-TOKEN_ENDPOINTS: dict[ChannelType, str] = {
-    ctype: provider.token_url for ctype, provider in OWNED_TOKEN_PROVIDERS.items()
-}
+# Optional per-type token-endpoint overrides. The registry above is the single source of truth for a
+# provider's token URL (see `token_endpoint`); this dict only exists for edge providers registered
+# outside the registry or for test injection. Empty in v1. Self-managed providers (Reddit/PRAW) are
+# never listed — their client refreshes itself.
+TOKEN_ENDPOINTS: dict[ChannelType, str] = {}
+
+
+def token_endpoint(channel_type: ChannelType) -> str | None:
+    """The OAuth2 token endpoint to refresh this channel type, or None if it has no owned-token
+    provider. An explicit `TOKEN_ENDPOINTS` override wins; otherwise it comes from the registry, so
+    registering a provider makes it refreshable (S4.8) with no second edit and no drift."""
+    if channel_type in TOKEN_ENDPOINTS:
+        return TOKEN_ENDPOINTS[channel_type]
+    provider = OWNED_TOKEN_PROVIDERS.get(channel_type)
+    return provider.token_url if provider else None
 
 
 def needs_refresh(expires_at: datetime | None, now: datetime) -> bool:
@@ -146,7 +156,7 @@ def refresh_channel_token(
     (`{type}_client_id`/`{type}_client_secret`). Self-managed structured blobs are filtered out
     upstream, so this only ever sees bare tokens."""
     prefix = channel.type.value
-    endpoint = TOKEN_ENDPOINTS.get(channel.type)
+    endpoint = token_endpoint(channel.type)
     if endpoint is None:
         raise RefreshUnavailable(
             f"no OAuth token endpoint registered for channel type {channel.type}"
