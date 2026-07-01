@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 
-from app.channels.base import PublishResult, Retryable
+from app.channels.base import AuthFailure, PublishResult, Retryable
 from app.models import Channel, ContentItem, Product
 from app.models.channel import ChannelType
 
@@ -74,6 +74,22 @@ def _existing_permalink(reddit, subreddit: str, marker: str) -> str | None:
         ):
             return _permalink_url(submission.permalink)
     return None
+
+
+def _is_auth_failure(exc: Exception) -> bool:
+    """A dead/revoked-token or unauthorized error (401/403 / OAuth). These are permanent like other
+    API errors, but channel-level: the whole channel's credential is bad, so S4.8 fences the channel
+    rather than just failing the one item. PRAW self-refreshes access tokens, so a failure here
+    means the refresh token itself is revoked/expired."""
+    try:
+        from prawcore.exceptions import Forbidden, InvalidToken, OAuthException, ResponseException
+    except ImportError:  # praw not installed in this env — no auth classification available
+        return False
+    if isinstance(exc, OAuthException | InvalidToken | Forbidden):
+        return True
+    if isinstance(exc, ResponseException):
+        return getattr(getattr(exc, "response", None), "status_code", None) in (401, 403)
+    return False
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -131,10 +147,13 @@ class RedditAdapter:
             )
             permalink = submission.permalink
         except Exception as exc:
-            # Transient → Retryable (retry next tick); permanent Reddit error → surface so the
-            # publish pass records `publish_failed` instead of retrying a doomed post forever.
+            # Transient → Retryable (retry next tick); auth/token failure → AuthFailure (fence the
+            # channel, S4.8); other permanent Reddit errors → surface so the publish pass records
+            # `publish_failed` instead of retrying a doomed post forever.
             if _is_transient(exc):
                 raise Retryable(f"reddit submit failed: {exc}") from exc
+            if _is_auth_failure(exc):
+                raise AuthFailure(f"reddit auth failed: {exc}") from exc
             raise
         return PublishResult(external_url=_permalink_url(permalink))
 
@@ -148,6 +167,8 @@ class RedditAdapter:
         except Exception as exc:
             if _is_transient(exc):
                 raise Retryable(f"reddit delete failed: {exc}") from exc
+            if _is_auth_failure(exc):
+                raise AuthFailure(f"reddit auth failed: {exc}") from exc
             raise
 
 

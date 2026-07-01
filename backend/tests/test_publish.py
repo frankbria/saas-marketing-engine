@@ -73,6 +73,7 @@ def _channel(
     enabled=True,
     autonomous=True,
     profile=None,
+    connect_state=None,
 ):
     c = Channel(
         product_id=product_id,
@@ -82,6 +83,7 @@ def _channel(
         paused=paused,
         daily_cap=daily_cap,
         profile_json=json.dumps(profile) if profile else None,
+        **({"connect_state": connect_state} if connect_state is not None else {}),
     )
     session.add(c)
     session.commit()
@@ -125,8 +127,11 @@ class StubAdapter:
         self.url = url
         self.calls: list[int] = []
 
+        self.creds_seen: list[str | None] = []  # creds handed to publish (S4.8 refresh checks)
+
     def publish(self, item, product, channel, creds):
         self.calls.append(item.id)
+        self.creds_seen.append(creds)
         if self.error is not None:
             raise self.error
         return PublishResult(external_url=self.url)
@@ -587,3 +592,279 @@ def test_reddit_ratelimit_api_exception_is_retryable():
 def test_get_adapter_rejects_deferred_type():
     with pytest.raises(LookupError):
         get_adapter(ChannelType.INSTAGRAM)
+
+
+# --- S4.8: OAuth refresh handling (fail-safe) --------------------------------------------------
+
+from app.models import ConnectState  # noqa: E402
+from app.secrets import vault  # noqa: E402
+
+
+def _oauth_channel(session, product_id, *, expires_at, token="tok-old"):
+    """A CONNECTED reddit channel with a stored oauth token expiring at `expires_at`."""
+    c = _channel(
+        session,
+        product_id,
+        ctype=ChannelType.REDDIT,
+        profile={"subreddit": "x"},
+        connect_state=ConnectState.CONNECTED,
+    )
+    vault.put_credential(
+        session, product_id, "reddit_oauth", token, channel_id=c.id, expires_at=expires_at
+    )
+    return c
+
+
+def test_publish_halts_on_failed_connect_state(session):
+    # AC2: a channel marked `failed` (dead token) halts its publishes; item stays scheduled.
+    p = _product(session)
+    c = _channel(session, p.id, connect_state=ConnectState.FAILED)
+    it = _scheduled_item(session, p, c)
+    stub = StubAdapter()
+
+    assert publish_scheduled(session, NOW, adapter_for=lambda t: stub) == []
+    assert stub.calls == []  # never published for a failed channel
+    session.refresh(it)
+    assert it.status == ContentItemStatus.SCHEDULED
+
+
+def test_publish_refreshes_token_near_expiry_then_publishes(session):
+    # AC1: a token within the refresh buffer is proactively refreshed before publishing, and the
+    # publish then uses the fresh credential.
+    p = _product(session)
+    c = _oauth_channel(session, p.id, expires_at=NOW + timedelta(minutes=1), token="tok-old")
+    it = _scheduled_item(session, p, c)
+    stub = StubAdapter(credential_key="reddit_oauth")
+
+    def fake_refresh(session, product, channel, now):
+        vault.put_credential(
+            session,
+            product.id,
+            "reddit_oauth",
+            "tok-new",
+            channel_id=channel.id,
+            expires_at=now + timedelta(days=1),
+        )
+
+    published = publish_scheduled(session, NOW, adapter_for=lambda t: stub, refresh=fake_refresh)
+    assert [i.id for i in published] == [it.id]
+    assert stub.creds_seen == ["tok-new"]  # published with the refreshed token
+
+
+def test_publish_does_not_refresh_when_token_fresh(session):
+    # A token well beyond the buffer is left alone (no needless refresh).
+    p = _product(session)
+    c = _oauth_channel(session, p.id, expires_at=NOW + timedelta(days=30), token="tok-old")
+    _scheduled_item(session, p, c)
+    stub = StubAdapter(credential_key="reddit_oauth")
+
+    def boom(*a, **k):
+        raise AssertionError("refresh must not run for a fresh token")
+
+    published = publish_scheduled(session, NOW, adapter_for=lambda t: stub, refresh=boom)
+    assert len(published) == 1
+    assert stub.creds_seen == ["tok-old"]
+
+
+def test_publish_does_not_refresh_when_no_expiry(session):
+    # No stored expiry => nothing to proactively refresh; publish proceeds with the current token.
+    p = _product(session)
+    c = _oauth_channel(session, p.id, expires_at=None, token="tok-old")
+    _scheduled_item(session, p, c)
+    stub = StubAdapter(credential_key="reddit_oauth")
+
+    def boom(*a, **k):
+        raise AssertionError("refresh must not run without a known expiry")
+
+    assert len(publish_scheduled(session, NOW, adapter_for=lambda t: stub, refresh=boom)) == 1
+
+
+def test_publish_refresh_failure_marks_failed_halts_and_alerts(session, caplog):
+    # AC2: a failed refresh sets the channel `failed`, halts the publish (item stays scheduled),
+    # and fires an alert.
+    p = _product(session)
+    c = _oauth_channel(session, p.id, expires_at=NOW + timedelta(seconds=30))
+    it = _scheduled_item(session, p, c)
+    stub = StubAdapter(credential_key="reddit_oauth")
+
+    def dead_refresh(*a, **k):
+        raise RuntimeError("refresh token revoked")
+
+    with caplog.at_level("WARNING"):
+        published = publish_scheduled(
+            session, NOW, adapter_for=lambda t: stub, refresh=dead_refresh
+        )
+
+    assert published == []
+    assert stub.calls == []  # never attempted a publish on the dead channel
+    session.refresh(c)
+    assert c.connect_state == ConnectState.FAILED
+    session.refresh(it)
+    assert it.status == ContentItemStatus.SCHEDULED  # halted, not failed — resumes once reconnected
+    assert any("oauth_refresh_failed" in r.getMessage() for r in caplog.records)
+
+
+def test_pace_skips_failed_channel(session):
+    # A failed channel should not accrue newly-scheduled items either.
+    p = _product(session)
+    c = _channel(session, p.id, connect_state=ConnectState.FAILED)
+    _item(session, p.id, c.id)
+    assert pace_content(session, NOW) == []
+    assert all(
+        r.status == ContentItemStatus.CRITIC_PASSED for r in session.exec(select(ContentItem)).all()
+    )
+
+
+def test_publish_proceeds_when_no_refresh_handler_registered(session):
+    # A bare (owned) token near expiry whose provider has no registered token endpoint can't be
+    # proactively refreshed — that's a config gap, not a refresh failure. We proceed (the token may
+    # still be valid) and rely on the reactive AuthFailure fence if it's actually dead, rather than
+    # needlessly fencing a live channel. (v1 registers no endpoints; TOKEN_ENDPOINTS is empty.)
+    p = _product(session)
+    c = _oauth_channel(session, p.id, expires_at=NOW + timedelta(minutes=1), token="tok-old")
+    it = _scheduled_item(session, p, c)
+    stub = StubAdapter(credential_key="reddit_oauth")
+
+    published = publish_scheduled(session, NOW, adapter_for=lambda t: stub)
+    assert [i.id for i in published] == [it.id]
+    assert stub.creds_seen == ["tok-old"]  # published with the existing token
+    session.refresh(c)
+    assert c.connect_state == ConnectState.CONNECTED  # not fenced — config gap ≠ dead token
+
+
+def test_publish_skips_refresh_for_self_managed_credential(session):
+    # A structured reddit_oauth blob (PRAW kwargs) is self-refreshed by PRAW under the hood — even
+    # near expiry we must NOT run our bare-token refresher (which would corrupt the shape) and must
+    # NOT fail the channel. Publish proceeds, handing the untouched JSON blob to the adapter.
+    p = _product(session)
+    c = _channel(session, p.id, ctype=ChannelType.REDDIT, connect_state=ConnectState.CONNECTED)
+    blob = json.dumps({"client_id": "x", "refresh_token": "z"})
+    vault.put_credential(
+        session, p.id, "reddit_oauth", blob, channel_id=c.id, expires_at=NOW + timedelta(minutes=1)
+    )
+    it = _scheduled_item(session, p, c)
+    stub = StubAdapter(credential_key="reddit_oauth")
+
+    def boom(*a, **k):
+        raise AssertionError("bare-token refresher must not run for a self-managed credential")
+
+    published = publish_scheduled(session, NOW, adapter_for=lambda t: stub, refresh=boom)
+    assert [i.id for i in published] == [it.id]
+    assert stub.creds_seen == [blob]  # adapter got the untouched JSON blob
+    session.refresh(c)
+    assert c.connect_state == ConnectState.CONNECTED  # healthy channel not fenced off
+
+
+def test_publish_adapter_lookup_failure_is_isolated(session):
+    # §8.3 isolation: an adapter-lookup failure on one item marks just that item publish_failed and
+    # must not abort the pass — a sibling item on a working channel still publishes.
+    p = _product(session)
+    bad = _channel(session, p.id, ctype=ChannelType.BLOG)
+    good = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "x"})
+    bad_it = _scheduled_item(session, p, bad)
+    good_it = _scheduled_item(session, p, good)
+    stub = StubAdapter()
+
+    def adapter_for(ctype):
+        if ctype == ChannelType.BLOG:
+            raise LookupError("no adapter")
+        return stub
+
+    published = publish_scheduled(session, NOW, adapter_for=adapter_for)
+    assert [i.id for i in published] == [good_it.id]
+    session.refresh(bad_it)
+    assert bad_it.status == ContentItemStatus.PUBLISH_FAILED
+
+
+def test_reddit_auth_error_classified_as_auth_failure():
+    # A 401/403 or OAuth error means the (self-managed) credential is dead — classified as an auth
+    # failure so the publish pass fences the whole channel, not just the one item.
+    from prawcore.exceptions import ResponseException
+
+    from app.channels.reddit import _is_auth_failure
+
+    assert _is_auth_failure(ResponseException(SimpleNamespace(status_code=401))) is True
+    assert _is_auth_failure(ResponseException(SimpleNamespace(status_code=403))) is True
+    assert _is_auth_failure(ResponseException(SimpleNamespace(status_code=400))) is False
+    assert _is_auth_failure(ValueError("bad title")) is False
+
+
+def test_publish_auth_failure_fences_channel(session, caplog):
+    # AC2 for the real self-managed provider: an AuthFailure raised during publish fences the whole
+    # channel (connect_state=FAILED + alert) and leaves the item scheduled (resumes on reconnect),
+    # rather than a per-item publish_failed that leaves the dead channel CONNECTED.
+    from app.channels.base import AuthFailure
+
+    p = _product(session)
+    c = _channel(session, p.id, ctype=ChannelType.REDDIT, connect_state=ConnectState.CONNECTED)
+    it = _scheduled_item(session, p, c)
+    stub = StubAdapter(credential_key="reddit_oauth", error=AuthFailure("token revoked"))
+
+    with caplog.at_level("WARNING"):
+        assert publish_scheduled(session, NOW, adapter_for=lambda t: stub) == []
+    session.refresh(c)
+    assert c.connect_state == ConnectState.FAILED
+    session.refresh(it)
+    assert it.status == ContentItemStatus.SCHEDULED  # not publish_failed — resumes on reconnect
+    assert any("oauth_refresh_failed" in r.getMessage() for r in caplog.records)
+
+
+def test_refresh_channel_token_grant_updates_bare_token(session, monkeypatch):
+    # The owned-token path (the /connect bare-token shape) runs a real OAuth2 refresh grant: it
+    # reads the refresh token + client creds from the vault, calls the provider token endpoint
+    # (injected here — network boundary), and writes the new bare access token + fresh expiry back.
+    from app.modules.crank import oauth_refresh
+    from app.secrets.vault import get_credential_expiry
+
+    p = _product(session)
+    c = _channel(session, p.id, ctype=ChannelType.REDDIT, connect_state=ConnectState.CONNECTED)
+    vault.put_credential(session, p.id, "reddit_oauth", "old", channel_id=c.id, expires_at=NOW)
+    vault.put_credential(session, p.id, "reddit_oauth_refresh", "rtok", channel_id=c.id)
+    vault.put_credential(session, p.id, "reddit_client_id", "cid", channel_id=c.id)
+    vault.put_credential(session, p.id, "reddit_client_secret", "csec", channel_id=c.id)
+    monkeypatch.setitem(oauth_refresh.TOKEN_ENDPOINTS, ChannelType.REDDIT, "https://ex/token")
+
+    captured = {}
+
+    def fake_post(endpoint, refresh_token, client_id, client_secret):
+        captured.update(endpoint=endpoint, refresh=refresh_token, cid=client_id, csec=client_secret)
+        return {"access_token": "new", "expires_in": 3600}
+
+    monkeypatch.setattr(oauth_refresh, "_post_token_refresh", fake_post)
+
+    oauth_refresh.refresh_channel_token(session, p, c, NOW)
+
+    assert captured == {
+        "endpoint": "https://ex/token",
+        "refresh": "rtok",
+        "cid": "cid",
+        "csec": "csec",
+    }
+    assert vault.get_credential(session, p.id, "reddit_oauth", channel_id=c.id) == "new"
+    stored_expiry = get_credential_expiry(session, p.id, "reddit_oauth", channel_id=c.id)
+    assert _utc(stored_expiry) == NOW + timedelta(seconds=3600)
+
+
+def test_refresh_channel_token_persists_rotated_refresh_token(session, monkeypatch):
+    # Refresh-token rotation: when the grant returns a new refresh_token, it must be persisted (the
+    # provider revokes the old one), or the next refresh would present a dead token.
+    from app.modules.crank import oauth_refresh
+
+    p = _product(session)
+    c = _channel(session, p.id, ctype=ChannelType.REDDIT, connect_state=ConnectState.CONNECTED)
+    vault.put_credential(session, p.id, "reddit_oauth", "old", channel_id=c.id, expires_at=NOW)
+    vault.put_credential(session, p.id, "reddit_oauth_refresh", "rtok-old", channel_id=c.id)
+    vault.put_credential(session, p.id, "reddit_client_id", "cid", channel_id=c.id)
+    vault.put_credential(session, p.id, "reddit_client_secret", "csec", channel_id=c.id)
+    monkeypatch.setitem(oauth_refresh.TOKEN_ENDPOINTS, ChannelType.REDDIT, "https://ex/token")
+    monkeypatch.setattr(
+        oauth_refresh,
+        "_post_token_refresh",
+        lambda *a: {"access_token": "new", "refresh_token": "rtok-new", "expires_in": 3600},
+    )
+
+    oauth_refresh.refresh_channel_token(session, p, c, NOW)
+
+    assert (
+        vault.get_credential(session, p.id, "reddit_oauth_refresh", channel_id=c.id) == "rtok-new"
+    )
