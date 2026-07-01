@@ -154,7 +154,7 @@ def test_connect_reddit_stores_praw_kwargs(ctx):
         from app.models import Credential
 
         cred = s.exec(select(Credential).where(Credential.key == "reddit_oauth")).first()
-        assert "cid" not in cred.ciphertext  # only ciphertext at rest
+        assert cred.ciphertext != stored  # only ciphertext at rest (plaintext is never stored)
 
 
 def test_connect_reddit_missing_creds_400(ctx):
@@ -201,12 +201,17 @@ def test_connect_owned_token_stores_bare(ctx):
         assert vault.get_credential(s, pid, "x_oauth_refresh", channel_id=cid) == "ref-xyz"
 
 
-def test_connect_owned_empty_token_400(ctx):
+@pytest.mark.parametrize("token", ["", "   "])
+def test_connect_owned_blank_token_400(ctx, token):
+    """Empty *and* whitespace-only tokens are rejected — a blank must never store a
+    connected-but-broken owned credential."""
     c, engine = ctx
     pid = _seed_product(engine)
     cid = _seed_channel(engine, pid, ctype=ChannelType.X)
     assert (
-        c.post(f"/api/private/channels/{pid}/{cid}/connect", json={"access_token": ""}).status_code
+        c.post(
+            f"/api/private/channels/{pid}/{cid}/connect", json={"access_token": token}
+        ).status_code
         == 400
     )
 

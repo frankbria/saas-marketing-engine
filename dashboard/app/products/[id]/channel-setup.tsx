@@ -149,13 +149,26 @@ export function ChannelSetup({
                         refresh_token: String(data.get("refresh_token") ?? "").trim(),
                         user_agent: String(data.get("user_agent") ?? "").trim(),
                       }
-                      if (Object.values(reddit).every(Boolean))
-                        run(() => connectChannel(productId, channel.id, { reddit }))
+                      if (!Object.values(reddit).every(Boolean)) {
+                        setError("All Reddit credential fields are required")
+                        return
+                      }
+                      run(() => connectChannel(productId, channel.id, { reddit }))
                     }}
                   >
                     <input name="client_id" placeholder="client_id" className={field} />
-                    <input name="client_secret" placeholder="client_secret" className={field} />
-                    <input name="refresh_token" placeholder="refresh_token" className={field} />
+                    <input
+                      type="password"
+                      name="client_secret"
+                      placeholder="client_secret"
+                      className={field}
+                    />
+                    <input
+                      type="password"
+                      name="refresh_token"
+                      placeholder="refresh_token"
+                      className={field}
+                    />
                     <input name="user_agent" placeholder="user_agent" className={field} />
                     <Button type="submit" variant="outline" disabled={busy}>
                       Connect
@@ -169,15 +182,19 @@ export function ChannelSetup({
                       const token = String(
                         new FormData(e.currentTarget).get("access_token") ?? ""
                       ).trim()
-                      if (token)
-                        run(() =>
-                          connectChannel(productId, channel.id, {
-                            access_token: token,
-                          })
-                        )
+                      if (!token) {
+                        setError("An OAuth token is required")
+                        return
+                      }
+                      run(() =>
+                        connectChannel(productId, channel.id, {
+                          access_token: token,
+                        })
+                      )
                     }}
                   >
                     <input
+                      type="password"
                       name="access_token"
                       placeholder="paste OAuth token"
                       className={field}

@@ -69,6 +69,15 @@ class ConnectRequest(BaseModel):
     reddit: RedditCredential | None = None
     account_ref: str | None = None  # the connected handle/username, if known
 
+    @field_validator("access_token", "refresh_token", "account_ref", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v: str | None) -> str | None:
+        # A whitespace-only token would pass the truthiness guard and store a connected-but-broken
+        # credential; collapse blanks to None so the missing-token path (400) fires instead.
+        if isinstance(v, str):
+            return v.strip() or None
+        return v
+
 
 class ChecklistUpdate(BaseModel):
     status: SetupItemStatus
