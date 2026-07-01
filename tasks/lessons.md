@@ -1,5 +1,19 @@
 # Lessons
 
+## Deterministic number-matching needs BOTH type- and format-scoping (S4.4 guard).
+S4.4's claim-trace checks that a claimed number appears in the fact corpus. Two bugs, each caught by a
+different review bot, not by my first tests:
+- **Cross-type (codex):** a flat "number appears anywhere in facts" set let a `$99` price vouch for a
+  `99%` or `99x` claim. Fix: bucket facts by claim *kind* (percent/multiplier/money/count) and trace
+  each claim only to its own bucket.
+- **Format (CodeRabbit):** money facts built from `cents // 100` only held whole dollars, so a real
+  `$19.99` price false-blocked its own `$19.99` claim. Fix: add every legit representation
+  (cents `1999`, dollars `19`, dollars.cents `19.99`) to the money bucket.
+**How to apply:** when a deterministic guard matches extracted tokens against an allowed set, ask
+"could the *same token* mean different things?" (type-scope) and "does my source emit *every*
+surface form the content might use?" (format-scope). Add a regression test per failure mode. Numeric
+safety heuristics err toward false-blocks fast — run the diff past a cross-family review before merge.
+
 ## Moving a state transition between endpoints? Check the frontend callers.
 S2.8 moved the `setup_done → qa` crossing out of the S2.7 smoke-test endpoint into the new
 launch-checklist endpoint (spec-correct). The backend + its tests were self-consistent, but the
