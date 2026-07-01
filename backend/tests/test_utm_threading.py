@@ -116,6 +116,42 @@ def test_threads_multiple_links_independently(session):
     assert urlsplit(urls[1]).path == "/b"
 
 
+def test_threads_link_followed_by_sentence_period(session):
+    p = _product(session)
+    c = _channel(session, p.id)
+    it = _item(session, p.id, c.id, body="Read https://acme.example/landing.")
+
+    out = thread_utm_links(it.body, p, c, it)
+
+    url = next(t for t in out.split() if "acme.example/landing" in t)
+    assert urlsplit(url).path == "/landing"
+    assert out.endswith(".")
+
+
+def test_threads_link_inside_markdown_link(session):
+    p = _product(session)
+    c = _channel(session, p.id)
+    it = _item(session, p.id, c.id, body="Learn [more](https://acme.example/landing)")
+
+    out = thread_utm_links(it.body, p, c, it)
+
+    assert out.startswith("Learn [more](https://acme.example/landing?")
+    assert out.endswith(")")
+    assert _query(out.split("(")[1].rstrip(")")) == utm_params(p, c, it)
+
+
+def test_threads_link_followed_by_comma(session):
+    p = _product(session)
+    c = _channel(session, p.id)
+    it = _item(session, p.id, c.id, body="Visit https://acme.example/landing, today.")
+
+    out = thread_utm_links(it.body, p, c, it)
+
+    url = next(t for t in out.split() if "acme.example/landing" in t)
+    assert urlsplit(url).path == "/landing"
+    assert ", today." in out
+
+
 def test_no_marketing_domain_returns_body_unchanged(session):
     p = _product(session, domain=None)
     c = _channel(session, p.id)

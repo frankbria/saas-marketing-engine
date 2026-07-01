@@ -28,6 +28,8 @@ _UTM_CONTENT_PREFIX = "sme-"
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
+_TRAILING_PUNCT = ".,;:!?\"')]}"
+
 
 def utm_params(product: Product, channel: Channel, item: ContentItem) -> dict[str, str]:
     """The UTM query params a published item's links should carry."""
@@ -60,14 +62,18 @@ def thread_utm_links(body: str, product: Product, channel: Channel, item: Conten
     params = utm_params(product, channel, item)
 
     def _rewrite(match: re.Match[str]) -> str:
-        url = match.group(0)
-        parts = urlsplit(url)
+        raw = match.group(0)
+        core = raw.rstrip(_TRAILING_PUNCT)
+        suffix = raw[len(core) :]
+        parts = urlsplit(core)
         if parts.netloc.lower() != host:
-            return url
+            return raw
         query = dict(parse_qsl(parts.query, keep_blank_values=True))
         query.update(params)
         new_query = urlencode(query)
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+        return (
+            urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)) + suffix
+        )
 
     return _URL_RE.sub(_rewrite, body)
 
