@@ -46,6 +46,37 @@ def test_backfill_is_idempotent_and_noop_when_column_present(tmp_path):
     assert "spot_check" in _columns(engine, "content_item")
 
 
+def test_backfill_swallows_duplicate_column_race(tmp_path, monkeypatch):
+    """Concurrent startup: another process adds the column between our check and our ALTER. The
+    duplicate-column error is the outcome we wanted, so the backfill swallows it rather than crash.
+    Force the race window by making the inspector report the column absent though it exists."""
+    import app.db as db
+
+    dbfile = tmp_path / "race.db"
+    engine = create_engine(f"sqlite:///{dbfile}")
+    with engine.begin() as conn:  # table already HAS the column (the "winner" added it)
+        conn.execute(
+            text("CREATE TABLE content_item (id INTEGER PRIMARY KEY, spot_check BOOLEAN DEFAULT 0)")
+        )
+
+    real_inspect = db.inspect
+
+    class _StaleInspector:  # reports spot_check missing → forces the guarded ALTER to run
+        def __init__(self, insp):
+            self._insp = insp
+
+        def get_table_names(self):
+            return self._insp.get_table_names()
+
+        def get_columns(self, table):
+            return [c for c in self._insp.get_columns(table) if c["name"] != "spot_check"]
+
+    monkeypatch.setattr(db, "inspect", lambda eng: _StaleInspector(real_inspect(eng)))
+
+    db._backfill_additive_columns(engine)  # must NOT raise despite the duplicate-column ALTER
+    assert "spot_check" in _columns(engine, "content_item")
+
+
 def test_backfill_skips_when_table_absent(tmp_path):
     db = tmp_path / "empty.db"
     engine = create_engine(f"sqlite:///{db}")

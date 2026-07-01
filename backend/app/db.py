@@ -11,6 +11,7 @@ from collections.abc import Iterator
 
 from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
@@ -52,8 +53,14 @@ def _backfill_additive_columns(target: Engine) -> None:
             continue  # create_all made the whole table (with the column) — nothing to backfill
         if column in {c["name"] for c in inspector.get_columns(table)}:
             continue
-        with target.begin() as conn:
-            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        try:
+            with target.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        except OperationalError as exc:
+            # Concurrent startup: another process won the check-then-act race and added the column
+            # first. That's the outcome we wanted — swallow the duplicate, re-raise anything else.
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
 
 def init_db() -> None:
