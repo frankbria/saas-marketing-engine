@@ -18,8 +18,12 @@ The network boundary (`_post_token_refresh`) is module-level so tests inject it 
 `_build_reddit` seam); the pure parts (`needs_refresh`, `parse_token_response`) are unit-tested. A
 provider is refreshable once its token endpoint is registered in `TOKEN_ENDPOINTS`.
 
-ponytail: stdlib `urllib` (no new HTTP dependency). Full authorize→callback OAuth redirect + the
-provider-registration UI remain deferred (as `api/private/channels.py` already notes).
+S4.8.2 adds the *acquisition* half — a provider registry (`OWNED_TOKEN_PROVIDERS`, which also feeds
+`TOKEN_ENDPOINTS`), an `authorization_code` exchange behind the same injectable seam, and a signed
+expiring `state` — consumed by the authorize/callback endpoints in `api/private/channels.py`.
+
+ponytail: stdlib `urllib` (no new HTTP dependency); `state` reuses the vault Fernet key (no new
+table/session store). Live X/Instagram/YouTube provider entries remain out of scope (TECH_SPEC §7).
 """
 
 from __future__ import annotations
@@ -28,15 +32,22 @@ import base64
 import json
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from cryptography.fernet import InvalidToken
 from sqlmodel import Session
 
 from app.models import Channel, ChannelType, Product
+from app.secrets import vault
 from app.secrets.vault import get_credential, put_credential
 
 # Refresh once the token is within this window of expiry (or already past it).
 REFRESH_BUFFER = timedelta(minutes=5)
+
+# OAuth `state` lifetime: the redirect round-trip (consent screen) must complete within this window.
+# Fernet embeds the mint time, so verify enforces it as a TTL — a stale/replayed state is rejected.
+STATE_TTL = timedelta(minutes=10)
 
 
 class RefreshUnavailable(RuntimeError):
@@ -46,9 +57,30 @@ class RefreshUnavailable(RuntimeError):
     than fencing a channel whose token may still be valid."""
 
 
-# OAuth2 token endpoints for providers whose bare access token we hold and refresh ourselves.
-# Self-managed providers (e.g. Reddit via PRAW) are NOT listed — their client refreshes internally.
-TOKEN_ENDPOINTS: dict[ChannelType, str] = {}
+@dataclass(frozen=True)
+class OAuthProvider:
+    """Per-provider OAuth endpoints + default scopes for an owned-token channel (we hold and refresh
+    its bare access token). `authorize_url`/`token_url` drive the redirect + code-exchange dance;
+    `scopes` are requested at authorize time."""
+
+    authorize_url: str
+    token_url: str
+    scopes: tuple[str, ...] = ()
+
+
+# Owned-token OAuth providers, keyed by ChannelType. Add an entry per provider as it goes live; that
+# entry is the single registration point (it also populates `TOKEN_ENDPOINTS` below, so proactive
+# refresh starts working for it). Blog has no OAuth and Reddit self-manages via PRAW, so neither is
+# listed. Full X/Instagram/YouTube live integrations remain out of scope (TECH_SPEC §7) — the
+# machinery is verified end-to-end in tests via an injected provider (`monkeypatch.setitem`).
+OWNED_TOKEN_PROVIDERS: dict[ChannelType, OAuthProvider] = {}
+
+# OAuth2 token endpoints for providers whose bare access token we hold and refresh ourselves,
+# derived from the registry so registering a provider above makes it refreshable (S4.8) with no
+# second edit. Self-managed providers (Reddit via PRAW) are absent — their client refreshes itself.
+TOKEN_ENDPOINTS: dict[ChannelType, str] = {
+    ctype: provider.token_url for ctype, provider in OWNED_TOKEN_PROVIDERS.items()
+}
 
 
 def needs_refresh(expires_at: datetime | None, now: datetime) -> bool:
@@ -148,3 +180,87 @@ def refresh_channel_token(
         put_credential(
             session, product.id, f"{prefix}_oauth_refresh", rotated, channel_id=channel.id
         )
+
+
+# --- authorize → callback (S4.8.2) -------------------------------------------
+#
+# The refresh grant above tops up a token we already hold; this section is the *initial*
+# acquisition: an authorize redirect, then a one-time `authorization_code` exchange on callback.
+
+
+def build_authorize_url(
+    provider: OAuthProvider, client_id: str, redirect_uri: str, state: str
+) -> str:
+    """Provider consent URL for the redirect leg. Scopes are space-joined per RFC 6749; `state` is
+    the signed anti-CSRF token minted below."""
+    query = urllib.parse.urlencode(
+        {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": " ".join(provider.scopes),
+            "state": state,
+        }
+    )
+    return f"{provider.authorize_url}?{query}"
+
+
+def _post_token_exchange(
+    endpoint: str, code: str, redirect_uri: str, client_id: str, client_secret: str
+) -> dict:  # pragma: no cover - real network; injected in tests, exercised against the provider
+    """OAuth2 authorization_code grant with HTTP Basic client auth — the acquisition counterpart to
+    `_post_token_refresh`. Same seam shape so tests monkeypatch it (no-mocking house rule)."""
+    body = urllib.parse.urlencode(
+        {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri}
+    ).encode()
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    req = urllib.request.Request(  # noqa: S310 - fixed https endpoint from OWNED_TOKEN_PROVIDERS
+        endpoint, data=body, method="POST", headers={"Authorization": f"Basic {basic}"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed https endpoint
+        return json.loads(resp.read().decode())
+
+
+def exchange_authorization_code(
+    provider: OAuthProvider,
+    code: str,
+    redirect_uri: str,
+    client_id: str,
+    client_secret: str,
+    now: datetime,
+) -> tuple[str, str | None, datetime | None]:
+    """Complete OAuth: swap a callback `code` for (access_token, refresh_token?, expires_at?).
+    Reuses `parse_token_response` for the access token + expiry; the refresh token (if returned) is
+    what later `refresh_channel_token` calls present."""
+    data = _post_token_exchange(provider.token_url, code, redirect_uri, client_id, client_secret)
+    access_token, expires_at = parse_token_response(data, now)
+    return access_token, data.get("refresh_token"), expires_at
+
+
+# --- signed, expiring OAuth `state` ------------------------------------------
+#
+# CSRF protection for the redirect round-trip with no new DB table or session store: Fernet-encrypt
+# the (product, channel) the flow is for under the existing vault key, and verify it (with TTL) on
+# callback. The vault key is reused directly (not via vault.encrypt) so state tokens are NOT added
+# to the log-redaction set — they carry no secret, only ids already present in the request path.
+
+
+class InvalidState(ValueError):
+    """The callback `state` is tampered, forged, expired, or for a different (product, channel)."""
+
+
+def mint_state(product_id: int, channel_id: int) -> str:
+    """Sign a `state` binding this OAuth flow to (product_id, channel_id)."""
+    payload = json.dumps({"p": product_id, "c": channel_id}).encode()
+    return vault._fernet().encrypt(payload).decode()
+
+
+def verify_state(state: str, product_id: int, channel_id: int) -> None:
+    """Reject a forged `state`, one older than `STATE_TTL`, or one for a different channel."""
+    try:
+        payload = vault._fernet().decrypt(state.encode(), ttl=int(STATE_TTL.total_seconds()))
+        data = json.loads(payload)
+    except (InvalidToken, ValueError) as exc:
+        raise InvalidState("invalid or expired OAuth state") from exc
+    if data.get("p") != product_id or data.get("c") != channel_id:
+        raise InvalidState("OAuth state does not match this channel")

@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     public_api_base_url: str = "http://localhost:8010"
     nginx_sites_root: str = "./deploy/sites"
 
+    # S4.8.2 per-provider OAuth redirect flow. `oauth_redirect_base_url` is the *backend* origin the
+    # provider redirects the operator's browser back to — the callback path is appended to build the
+    # `redirect_uri` sent at authorize time (must match the value registered in the OAuth app).
+    # `dashboard_base_url` is where the callback then bounces the browser once tokens are stored.
+    # Plain str (non-sensitive); localhost dev defaults matching the v1 ports above.
+    oauth_redirect_base_url: str = "http://localhost:8010"
+    dashboard_base_url: str = "http://localhost:3010"
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:

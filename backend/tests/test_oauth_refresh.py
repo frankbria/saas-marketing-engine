@@ -1,16 +1,42 @@
-"""S4.8: pure helpers for the proactive OAuth-refresh policy (no network)."""
+"""S4.8/S4.8.2: pure helpers for the OAuth-refresh policy and the authorize→callback machinery
+(no network — the exchange seam is injected; `state` uses the real vault key via a temp fixture)."""
 
 from __future__ import annotations
 
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from app.modules.crank import oauth_refresh
 from app.modules.crank.oauth_refresh import (
+    OWNED_TOKEN_PROVIDERS,
     REFRESH_BUFFER,
+    TOKEN_ENDPOINTS,
+    InvalidState,
+    OAuthProvider,
+    build_authorize_url,
+    exchange_authorization_code,
     is_self_managed_credential,
+    mint_state,
     needs_refresh,
+    verify_state,
 )
+from app.secrets import vault
 
 NOW = datetime(2026, 6, 30, 12, 0, tzinfo=UTC)
+
+_PROVIDER = OAuthProvider(
+    authorize_url="https://provider.test/authorize",
+    token_url="https://provider.test/token",
+    scopes=("read", "write"),
+)
+
+
+@pytest.fixture
+def _vault_key(monkeypatch):
+    # `state` signing/verification uses the vault Fernet key — give it a real one to round-trip.
+    monkeypatch.setattr(vault.settings, "vault_key", vault.generate_key())
 
 
 def test_needs_refresh_none_expiry_is_false():
@@ -62,9 +88,99 @@ def test_parse_token_response_zero_expiry_is_immediate():
 
 
 def test_parse_token_response_missing_token_raises():
-    import pytest
-
     from app.modules.crank.oauth_refresh import parse_token_response
 
     with pytest.raises(RuntimeError, match="no access_token"):
         parse_token_response({"error": "invalid_grant"}, NOW)
+
+
+# ---- S4.8.2: provider registry + authorize URL ------------------------------------------
+
+
+def test_token_endpoints_derived_from_registry():
+    # The refresh seam is derived from the provider registry, so registering a provider is a
+    # one-line edit that also makes it refreshable. v1 ships neither (X/IG/YT out of scope).
+    assert TOKEN_ENDPOINTS == {t: p.token_url for t, p in OWNED_TOKEN_PROVIDERS.items()}
+
+
+def test_build_authorize_url_has_scopes_state_and_redirect():
+    url = build_authorize_url(_PROVIDER, "client-abc", "https://us/cb", "sig-state")
+    base, _, query = url.partition("?")
+    assert base == "https://provider.test/authorize"
+    q = urllib.parse.parse_qs(query)
+    assert q["response_type"] == ["code"]
+    assert q["client_id"] == ["client-abc"]
+    assert q["redirect_uri"] == ["https://us/cb"]
+    assert q["scope"] == ["read write"]  # space-joined per RFC 6749
+    assert q["state"] == ["sig-state"]
+
+
+# ---- S4.8.2: authorization_code exchange (injected seam) --------------------------------
+
+
+def test_exchange_authorization_code_returns_tokens_and_expiry(monkeypatch):
+    captured = {}
+
+    def fake_post(endpoint, code, redirect_uri, client_id, client_secret):
+        captured.update(
+            endpoint=endpoint, code=code, redirect=redirect_uri, cid=client_id, csec=client_secret
+        )
+        return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
+
+    monkeypatch.setattr(oauth_refresh, "_post_token_exchange", fake_post)
+
+    access, refresh, expires_at = exchange_authorization_code(
+        _PROVIDER, "the-code", "https://us/cb", "cid", "csec", NOW
+    )
+    assert (access, refresh) == ("at", "rt")
+    assert expires_at == NOW + timedelta(seconds=3600)
+    assert captured == {
+        "endpoint": "https://provider.test/token",
+        "code": "the-code",
+        "redirect": "https://us/cb",
+        "cid": "cid",
+        "csec": "csec",
+    }
+
+
+def test_exchange_authorization_code_without_refresh_token(monkeypatch):
+    # A provider that returns no refresh_token yields None (callback then stores no refresh cred).
+    monkeypatch.setattr(
+        oauth_refresh, "_post_token_exchange", lambda *a: {"access_token": "at", "expires_in": 60}
+    )
+    access, refresh, expires_at = exchange_authorization_code(
+        _PROVIDER, "c", "https://us/cb", "cid", "csec", NOW
+    )
+    assert access == "at" and refresh is None
+    assert expires_at == NOW + timedelta(seconds=60)
+
+
+# ---- S4.8.2: signed, expiring OAuth state ----------------------------------------------
+
+
+def test_state_round_trips_for_matching_channel(_vault_key):
+    verify_state(mint_state(7, 3), 7, 3)  # does not raise
+
+
+def test_state_rejected_for_wrong_channel(_vault_key):
+    state = mint_state(7, 3)
+    with pytest.raises(InvalidState):
+        verify_state(state, 7, 4)
+    with pytest.raises(InvalidState):
+        verify_state(state, 8, 3)
+
+
+def test_state_rejected_when_tampered(_vault_key):
+    state = mint_state(7, 3)
+    with pytest.raises(InvalidState):
+        verify_state(state[:-2] + "xx", 7, 3)
+
+
+def test_state_rejected_when_expired(_vault_key):
+    # Fernet embeds the mint time; a token minted long ago (epoch 0) is past STATE_TTL → rejected.
+    import json
+
+    payload = json.dumps({"p": 7, "c": 3}).encode()
+    stale = vault._fernet().encrypt_at_time(payload, 0).decode()
+    with pytest.raises(InvalidState):
+        verify_state(stale, 7, 3)

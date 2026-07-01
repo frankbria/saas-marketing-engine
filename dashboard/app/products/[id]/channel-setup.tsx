@@ -5,7 +5,9 @@ import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
+  authorizeUrl,
   connectChannel,
+  seedClientCredentials,
   setChannelPaused,
   setChecklistItemStatus,
   triggerChannelSetup,
@@ -15,6 +17,12 @@ import {
 
 const field =
   "w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+
+// Channel types with a registered redirect-based OAuth provider (S4.8.2). Mirrors the backend
+// `OWNED_TOKEN_PROVIDERS` registry — empty in v1 (X/IG/YT stay human-assisted, TECH_SPEC §7). Only
+// these render the seed-credentials + "Connect" redirect controls; others keep the manual paste
+// form (the backend rejects authorize/credentials for an unregistered type, so we don't offer it).
+const REDIRECT_OAUTH_TYPES = new Set<Channel["type"]>([])
 
 const connectBadge: Record<Channel["connect_state"], string> = {
   pending: "bg-muted text-muted-foreground",
@@ -175,34 +183,83 @@ export function ChannelSetup({
                     </Button>
                   </form>
                 ) : (
-                  <form
-                    className="flex gap-2"
-                    onSubmit={(e) => {
-                      e.preventDefault()
-                      const token = String(
-                        new FormData(e.currentTarget).get("access_token") ?? ""
-                      ).trim()
-                      if (!token) {
-                        setError("An OAuth token is required")
-                        return
-                      }
-                      run(() =>
-                        connectChannel(productId, channel.id, {
-                          access_token: token,
-                        })
-                      )
-                    }}
-                  >
-                    <input
-                      type="password"
-                      name="access_token"
-                      placeholder="paste OAuth token"
-                      className={field}
-                    />
-                    <Button type="submit" variant="outline" disabled={busy}>
-                      Connect
-                    </Button>
-                  </form>
+                  <div className="flex flex-col gap-3">
+                    {/* Redirect-based connect (S4.8.2): seed OAuth-app client credentials, then hand
+                        off to the provider consent screen — rendered only for a registered provider
+                        (v1: none), so no channel shows a control the backend would reject with 400. */}
+                    {REDIRECT_OAUTH_TYPES.has(channel.type) && (
+                    <form
+                      className="flex flex-col gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        const data = new FormData(e.currentTarget)
+                        const clientId = String(data.get("client_id") ?? "").trim()
+                        const clientSecret = String(data.get("client_secret") ?? "").trim()
+                        if (!clientId || !clientSecret) {
+                          setError("Client ID and secret are required")
+                          return
+                        }
+                        run(() =>
+                          seedClientCredentials(productId, channel.id, clientId, clientSecret)
+                        )
+                      }}
+                    >
+                      <input name="client_id" placeholder="client_id" className={field} />
+                      <input
+                        type="password"
+                        name="client_secret"
+                        placeholder="client_secret"
+                        className={field}
+                      />
+                      <div className="flex gap-2">
+                        <Button type="submit" variant="outline" disabled={busy}>
+                          Save app credentials
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="default"
+                          disabled={busy}
+                          onClick={() => {
+                            // Full-page navigation: the provider (and its callback) own the tab.
+                            window.location.href = authorizeUrl(productId, channel.id)
+                          }}
+                        >
+                          Connect
+                        </Button>
+                      </div>
+                    </form>
+                    )}
+                    {/* Manual token paste — the connect path for channels without a registered
+                        redirect provider (v1: all non-Reddit), and a fallback otherwise. */}
+                    <form
+                      className="flex gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        const token = String(
+                          new FormData(e.currentTarget).get("access_token") ?? ""
+                        ).trim()
+                        if (!token) {
+                          setError("An OAuth token is required")
+                          return
+                        }
+                        run(() =>
+                          connectChannel(productId, channel.id, {
+                            access_token: token,
+                          })
+                        )
+                      }}
+                    >
+                      <input
+                        type="password"
+                        name="access_token"
+                        placeholder="paste OAuth token"
+                        className={field}
+                      />
+                      <Button type="submit" variant="outline" disabled={busy}>
+                        Connect
+                      </Button>
+                    </form>
+                  </div>
                 )}
               </li>
             )

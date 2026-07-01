@@ -3,11 +3,12 @@ per-provider credential shape (self-managed Reddit vs owned bare token), toggles
 
 import json
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.channels.reddit import RedditAdapter
 from app.db import get_session
@@ -22,6 +23,8 @@ from app.models import (
     Product,
     SetupChecklistItem,
 )
+from app.modules.crank import oauth_refresh
+from app.modules.crank.oauth_refresh import OAuthProvider
 from app.secrets import vault
 
 
@@ -288,6 +291,163 @@ def test_connect_reddit_then_publish_end_to_end(ctx, monkeypatch):
     assert result.external_url == "https://www.reddit.com/r/test/comments/xyz/hi/"
     # the client was built from exactly the PRAW kwargs we connected with — shape round-trips
     assert captured["creds"] == _PRAW
+
+
+# ---- S4.8.2: redirect-based OAuth (seed creds → authorize → callback) --------------------
+
+_PROVIDER = OAuthProvider(
+    authorize_url="https://provider.test/authorize",
+    token_url="https://provider.test/token",
+    scopes=("read", "write"),
+)
+
+
+def _register_x(monkeypatch):
+    """Register a live owned-token provider for ChannelType.X so the redirect endpoints accept it
+    (v1 ships none — X/IG/YT are out of scope; the machinery is verified via this injected entry).
+    """
+    monkeypatch.setitem(oauth_refresh.OWNED_TOKEN_PROVIDERS, ChannelType.X, _PROVIDER)
+
+
+def _oauth_checklist(engine, pid, cid):
+    with Session(engine) as s:
+        s.add(
+            SetupChecklistItem(
+                product_id=pid, channel_id=cid, ord=0, instruction="Connect OAuth", category="oauth"
+            )
+        )
+        s.commit()
+
+
+def test_seed_client_credentials_stores_encrypted(ctx, monkeypatch):
+    c, engine = ctx
+    _register_x(monkeypatch)
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
+
+    resp = c.post(
+        f"/api/private/channels/{pid}/{cid}/credentials",
+        json={"client_id": "app-id", "client_secret": "app-secret"},
+    )
+    assert resp.status_code == 204
+    with Session(engine) as s:
+        assert vault.get_credential(s, pid, "x_client_id", channel_id=cid) == "app-id"
+        assert vault.get_credential(s, pid, "x_client_secret", channel_id=cid) == "app-secret"
+        from sqlmodel import select
+
+        from app.models import Credential
+
+        cred = s.exec(select(Credential).where(Credential.key == "x_client_secret")).first()
+        assert cred.ciphertext != "app-secret"  # only ciphertext at rest
+
+
+def test_seed_rejects_unregistered_provider_400(ctx):
+    """Reddit self-manages (no registered redirect provider) — seeding client creds is rejected."""
+    c, engine = ctx
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.REDDIT)
+    assert (
+        c.post(
+            f"/api/private/channels/{pid}/{cid}/credentials",
+            json={"client_id": "a", "client_secret": "b"},
+        ).status_code
+        == 400
+    )
+
+
+def test_authorize_redirects_to_provider_with_signed_state(ctx, monkeypatch):
+    c, engine = ctx
+    _register_x(monkeypatch)
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
+    c.post(
+        f"/api/private/channels/{pid}/{cid}/credentials",
+        json={"client_id": "app-id", "client_secret": "app-secret"},
+    )
+
+    resp = c.get(f"/api/private/channels/{pid}/{cid}/authorize", follow_redirects=False)
+    assert resp.status_code == 302
+    location = resp.headers["location"]
+    base, _, query = location.partition("?")
+    assert base == "https://provider.test/authorize"
+    q = parse_qs(query)
+    assert q["client_id"] == ["app-id"]
+    assert q["scope"] == ["read write"]
+    assert q["redirect_uri"][0].endswith(f"/api/private/channels/{pid}/{cid}/callback")
+    # the state is a real signed token that verifies for exactly this (product, channel)
+    oauth_refresh.verify_state(q["state"][0], pid, cid)
+
+
+def test_authorize_without_seeded_creds_400(ctx, monkeypatch):
+    c, engine = ctx
+    _register_x(monkeypatch)
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
+    resp = c.get(f"/api/private/channels/{pid}/{cid}/authorize", follow_redirects=False)
+    assert resp.status_code == 400
+
+
+def test_callback_exchanges_code_stores_tokens_and_connects(ctx, monkeypatch):
+    c, engine = ctx
+    _register_x(monkeypatch)
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
+    _oauth_checklist(engine, pid, cid)
+    c.post(
+        f"/api/private/channels/{pid}/{cid}/credentials",
+        json={"client_id": "app-id", "client_secret": "app-secret"},
+    )
+
+    captured = {}
+
+    def fake_exchange(endpoint, code, redirect_uri, client_id, client_secret):
+        captured.update(code=code, redirect=redirect_uri, cid=client_id, csec=client_secret)
+        return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
+
+    monkeypatch.setattr(oauth_refresh, "_post_token_exchange", fake_exchange)
+
+    state = oauth_refresh.mint_state(pid, cid)
+    resp = c.get(
+        f"/api/private/channels/{pid}/{cid}/callback",
+        params={"code": "the-code", "state": state},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert resp.headers["location"].endswith(f"/products/{pid}")  # bounced back to the dashboard
+    # exchanged with the seeded client creds + the same callback redirect_uri
+    assert captured["cid"] == "app-id" and captured["csec"] == "app-secret"
+    assert captured["redirect"].endswith(f"/api/private/channels/{pid}/{cid}/callback")
+
+    with Session(engine) as s:
+        assert vault.get_credential(s, pid, "x_oauth", channel_id=cid) == "at"
+        assert vault.get_credential(s, pid, "x_oauth_refresh", channel_id=cid) == "rt"
+        chan = s.get(Channel, cid)
+        assert chan.connect_state == ConnectState.CONNECTED
+        item = s.exec(
+            select(SetupChecklistItem).where(SetupChecklistItem.channel_id == cid)
+        ).first()
+        assert item.status.value == "done"  # oauth checklist auto-completed
+
+
+def test_callback_rejects_tampered_state_400(ctx, monkeypatch):
+    c, engine = ctx
+    _register_x(monkeypatch)
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
+    c.post(
+        f"/api/private/channels/{pid}/{cid}/credentials",
+        json={"client_id": "app-id", "client_secret": "app-secret"},
+    )
+    # a state minted for a different channel must not connect this one
+    wrong_state = oauth_refresh.mint_state(pid, cid + 999)
+    resp = c.get(
+        f"/api/private/channels/{pid}/{cid}/callback",
+        params={"code": "x", "state": wrong_state},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    with Session(engine) as s:
+        assert s.get(Channel, cid).connect_state == ConnectState.PENDING
 
 
 # ---- checklist toggle -------------------------------------------------------------------

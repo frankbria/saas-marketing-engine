@@ -9,18 +9,23 @@ is per-provider (S4.8.1): a self-managed provider (Reddit via PRAW) posts the st
 block that the adapter consumes as-is; an owned provider posts a bare `access_token` we hold and
 refresh ourselves (S4.8). `PATCH .../checklist/{item_id}` toggles a human step done/pending.
 
-ponytail: per-provider authorize→callback redirect is deferred to S4.8.2 (#65); this endpoint is the
-vault-write + connect_state half, and it stays testable against the real vault (no provider mock,
-per the no-mocking house rule).
+S4.8.2 adds the full redirect flow for owned-token providers: `POST .../credentials` seeds the
+OAuth-app client id/secret, `GET .../authorize` redirects to the provider consent screen, and
+`GET .../callback` exchanges the code for tokens (all via `modules/crank/oauth_refresh`), reusing
+the same vault-write + `connect_state=connected` half and auto-completing the oauth checklist step.
+The manual `/connect` paste path stays as a fallback. Everything stays testable against the real
+vault (no provider mock — the network exchange is injected at the module seam, per the house rule).
 """
 
 from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, field_validator
 from sqlmodel import Session, select
 
+from app.config import settings
 from app.db import get_session
 from app.models import (
     SELF_MANAGED_TYPES,
@@ -30,6 +35,14 @@ from app.models import (
     Product,
     SetupChecklistItem,
     SetupItemStatus,
+)
+from app.modules.crank.oauth_refresh import (
+    OWNED_TOKEN_PROVIDERS,
+    InvalidState,
+    build_authorize_url,
+    exchange_authorization_code,
+    mint_state,
+    verify_state,
 )
 from app.secrets import vault
 from app.worker import enqueue
@@ -87,11 +100,69 @@ class PauseRequest(BaseModel):
     paused: bool
 
 
+class SeedCredentialsRequest(BaseModel):
+    """OAuth-app client credentials for an owned-token provider (S4.8.2). Seeded through the flow so
+    they never have to be hand-loaded; stored channel-scoped, encrypted, auto-redacted."""
+
+    client_id: str
+    client_secret: str
+
+    @field_validator("*")
+    @classmethod
+    def _non_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be blank")
+        return v.strip()
+
+
 def _require_product(session: Session, product_id: int) -> Product:
     product = session.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="product not found")
     return product
+
+
+def _require_channel(session: Session, product_id: int, channel_id: int) -> Channel:
+    _require_product(session, product_id)
+    channel = session.get(Channel, channel_id)
+    if channel is None or channel.product_id != product_id:
+        raise HTTPException(status_code=404, detail="channel not found for this product")
+    return channel
+
+
+def _complete_oauth_checklist(session: Session, product_id: int, channel_id: int) -> None:
+    """Mark this channel's `oauth` setup step done — a successful connect auto-completes it, so the
+    operator doesn't tick it by hand. No-op if the item is absent (e.g. setup not yet run)."""
+    item = session.exec(
+        select(SetupChecklistItem).where(
+            SetupChecklistItem.product_id == product_id,
+            SetupChecklistItem.channel_id == channel_id,
+            SetupChecklistItem.category == "oauth",
+        )
+    ).first()
+    if item is not None and item.status != SetupItemStatus.DONE:
+        item.status = SetupItemStatus.DONE
+        item.updated_at = datetime.now(UTC)
+        session.add(item)
+
+
+def _mark_connected(
+    session: Session, product_id: int, channel: Channel, *, account_ref: str | None = None
+) -> Channel:
+    """Flip a channel to `connected`, record its handle if known, and auto-complete the oauth
+    checklist step. Callers persist the credential(s) to the vault first. Commits + refreshes."""
+    assert (
+        channel.id is not None
+    )  # persisted channel (from _require_channel) — for the type checker
+    channel.connect_state = ConnectState.CONNECTED
+    if account_ref:
+        channel.account_ref = account_ref
+    channel.updated_at = datetime.now(UTC)
+    session.add(channel)
+    _complete_oauth_checklist(session, product_id, channel.id)
+    session.commit()
+    session.refresh(channel)
+    return channel
 
 
 @router.post("/{product_id}/setup", status_code=202)
@@ -139,10 +210,7 @@ def connect_channel(
     Credential shape is per-provider (S4.8.1): a self-managed provider stores its structured blob
     verbatim under `{type}_oauth` (no separate refresh cred, no expiry — its client self-refreshes);
     an owned provider stores the bare `access_token` (+ optional refresh token / expiry)."""
-    _require_product(session, product_id)
-    channel = session.get(Channel, channel_id)
-    if channel is None or channel.product_id != product_id:
-        raise HTTPException(status_code=404, detail="channel not found for this product")
+    channel = _require_channel(session, product_id, channel_id)
 
     key = f"{channel.type.value}_oauth"
     if channel.type in SELF_MANAGED_TYPES:
@@ -177,14 +245,118 @@ def connect_channel(
                 channel_id=channel_id,
             )
 
-    channel.connect_state = ConnectState.CONNECTED
-    if payload.account_ref:
-        channel.account_ref = payload.account_ref
-    channel.updated_at = datetime.now(UTC)
-    session.add(channel)
-    session.commit()
-    session.refresh(channel)
-    return channel
+    return _mark_connected(session, product_id, channel, account_ref=payload.account_ref)
+
+
+def _require_owned_provider(channel: Channel):
+    """The channel's registered owned-token provider, or 400 if its type has none (blog has no
+    OAuth; Reddit self-manages via PRAW; X/IG/YT aren't registered — those stay manual)."""
+    provider = OWNED_TOKEN_PROVIDERS.get(channel.type)
+    if provider is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{channel.type.value} has no redirect-based OAuth provider registered",
+        )
+    return provider
+
+
+def _callback_redirect_uri(product_id: int, channel_id: int) -> str:
+    """The `redirect_uri` sent at authorize and re-sent at token exchange — must be byte-identical
+    for both legs (providers compare it), so it is built here once."""
+    base = settings.oauth_redirect_base_url.rstrip("/")
+    return f"{base}/api/private/channels/{product_id}/{channel_id}/callback"
+
+
+@router.post("/{product_id}/{channel_id}/credentials", status_code=204)
+def seed_client_credentials(
+    product_id: int, channel_id: int, payload: SeedCredentialsRequest, session: SessionDep
+) -> None:
+    """Store an owned-token provider's OAuth-app `client_id`/`client_secret` (channel-scoped,
+    encrypted) so the authorize/refresh legs can read them — no hand-loading into the vault."""
+    channel = _require_channel(session, product_id, channel_id)
+    _require_owned_provider(channel)
+    prefix = channel.type.value
+    vault.put_credential(
+        session, product_id, f"{prefix}_client_id", payload.client_id, channel_id=channel_id
+    )
+    vault.put_credential(
+        session, product_id, f"{prefix}_client_secret", payload.client_secret, channel_id=channel_id
+    )
+
+
+@router.get("/{product_id}/{channel_id}/authorize")
+def authorize_channel(product_id: int, channel_id: int, session: SessionDep) -> RedirectResponse:
+    """Begin the OAuth dance: redirect the operator's browser to the provider's consent screen with
+    the seeded client id, requested scopes, our callback `redirect_uri`, and a signed `state`."""
+    channel = _require_channel(session, product_id, channel_id)
+    provider = _require_owned_provider(channel)
+    client_id = vault.get_credential(
+        session, product_id, f"{channel.type.value}_client_id", channel_id=channel_id
+    )
+    if not client_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"seed {channel.type.value} client credentials before connecting",
+        )
+    url = build_authorize_url(
+        provider,
+        client_id,
+        _callback_redirect_uri(product_id, channel_id),
+        mint_state(product_id, channel_id),
+    )
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/{product_id}/{channel_id}/callback")
+def oauth_callback(
+    product_id: int, channel_id: int, code: str, state: str, session: SessionDep
+) -> RedirectResponse:
+    """Complete the OAuth dance: validate `state`, exchange `code` for tokens using the seeded
+    client credentials, persist them channel-scoped, flip the channel to `connected`, and bounce
+    the operator's browser to the dashboard. Query params never logged; tokens auto-redacted."""
+    channel = _require_channel(session, product_id, channel_id)
+    provider = _require_owned_provider(channel)
+    try:
+        verify_state(state, product_id, channel_id)
+    except InvalidState as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    prefix = channel.type.value
+    client_id = vault.get_credential(
+        session, product_id, f"{prefix}_client_id", channel_id=channel_id
+    )
+    client_secret = vault.get_credential(
+        session, product_id, f"{prefix}_client_secret", channel_id=channel_id
+    )
+    if not (client_id and client_secret):
+        raise HTTPException(
+            status_code=400, detail=f"seed {prefix} client credentials before connecting"
+        )
+
+    access_token, refresh_token, expires_at = exchange_authorization_code(
+        provider,
+        code,
+        _callback_redirect_uri(product_id, channel_id),
+        client_id,
+        client_secret,
+        datetime.now(UTC),
+    )
+    vault.put_credential(
+        session,
+        product_id,
+        f"{prefix}_oauth",
+        access_token,
+        channel_id=channel_id,
+        expires_at=expires_at,
+    )
+    if refresh_token:
+        vault.put_credential(
+            session, product_id, f"{prefix}_oauth_refresh", refresh_token, channel_id=channel_id
+        )
+    _mark_connected(session, product_id, channel)
+
+    dashboard = settings.dashboard_base_url.rstrip("/")
+    return RedirectResponse(f"{dashboard}/products/{product_id}", status_code=302)
 
 
 @router.patch("/{product_id}/{channel_id}/pause")
@@ -194,10 +366,7 @@ def set_channel_paused(
     """Flip the per-channel kill switch (S4.6). `publish_scheduled` re-checks `paused` immediately
     before every publish, so pausing halts new posts within one tick and resuming restores the
     schedule (items stay `scheduled`, nothing is lost)."""
-    _require_product(session, product_id)
-    channel = session.get(Channel, channel_id)
-    if channel is None or channel.product_id != product_id:
-        raise HTTPException(status_code=404, detail="channel not found for this product")
+    channel = _require_channel(session, product_id, channel_id)
     channel.paused = payload.paused
     channel.updated_at = datetime.now(UTC)
     session.add(channel)
