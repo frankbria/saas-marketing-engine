@@ -6,6 +6,7 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
   connectChannel,
+  setChannelPaused,
   setChecklistItemStatus,
   triggerChannelSetup,
   type Channel,
@@ -98,12 +99,34 @@ export function ChannelSetup({
                         autonomous
                       </span>
                     )}
+                    {channel.paused && (
+                      <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+                        paused
+                      </span>
+                    )}
                   </span>
-                  <span
-                    className={`rounded px-2 py-0.5 text-xs ${connectBadge[channel.connect_state]}`}
-                  >
-                    {channel.connect_state}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {channel.autonomous && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        disabled={busy}
+                        onClick={() =>
+                          run(() =>
+                            setChannelPaused(productId, channel.id, !channel.paused)
+                          )
+                        }
+                      >
+                        {channel.paused ? "Resume" : "Pause"}
+                      </Button>
+                    )}
+                    <span
+                      className={`rounded px-2 py-0.5 text-xs ${connectBadge[channel.connect_state]}`}
+                    >
+                      {channel.connect_state}
+                    </span>
+                  </div>
                 </div>
                 {profile.handle && (
                   <p className="text-muted-foreground">

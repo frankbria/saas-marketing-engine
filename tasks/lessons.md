@@ -73,6 +73,19 @@ invariant (novelty's `_TERMINAL_FAILURE` exclusion depends on it), and the diffe
 (`CRITIC_MODEL` haiku ≠ `GEN_MODEL` opus, FR-22). Partial-spend-on-retry is the shared worker limitation
 (no cost ledger) — documented, not fixed per-story.
 
+## Explore for pre-seeded work before planning a story — S4.6 was ~80% already built.
+S4.6 (per-channel kill switch) shipped almost entirely inside S4.5: the `Channel.paused` column,
+the pace-time filter (`~Channel.paused`), the *immediately-before-publish* re-check in
+`publish_scheduled`, the frontend `Channel.paused` type, AND the engine tests
+(`test_publish_paused_channel_kill_switch`, `test_pace_skips_paused_disabled_and_manual_channels`)
+all pre-existed. The only genuinely missing piece was the operator *control surface* — an endpoint to
+flip the flag + a dashboard toggle. This matches the S4.2/S4.5 "pre-seed forward-looking columns +
+constraints at `create_all` time" habit: a well-built prior story leaves the next one a thin shell.
+**How to apply:** before writing a plan, grep the codebase for the story's core noun/field
+(`grep -rn paused`) — the model, the guard, even tests may already be there. Scope the plan to the
+actual delta (here: control surface only), don't re-implement what the previous story pre-seeded, and
+say so explicitly in the plan's "what already exists" section so reviewers see the real diff.
+
 ## Publish adapters (S4.5): idempotency + transient/permanent errors on external side-effects.
 `app/channels/` adapters (`BlogAdapter`, `RedditAdapter`) publish a vetted `content_item` and must be
 idempotent + retry-safe. Patterns the cross-family + CodeRabbit reviews enforced (apply to any future

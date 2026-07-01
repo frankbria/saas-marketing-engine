@@ -228,6 +228,18 @@ export const setChecklistItemStatus = (
     body: JSON.stringify({ status }),
   })
 
+// S4.6: per-channel kill switch. Flips `channel.paused`; the engine re-checks it immediately
+// before every publish, so pausing halts new posts within a cycle and resuming restores the schedule.
+export const setChannelPaused = (
+  productId: number,
+  channelId: number,
+  paused: boolean
+) =>
+  apiFetch<Channel>(`/channels/${productId}/${channelId}/pause`, {
+    method: "PATCH",
+    body: JSON.stringify({ paused }),
+  })
+
 // S2.7: run the pre-QA funnel smoke test. Records the verdict; a pass clears the smoke gate but the
 // launch-checklist step (S2.8) is what crosses to `qa`.
 export const runSmokeTest = (productId: number) =>

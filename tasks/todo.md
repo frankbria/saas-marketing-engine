@@ -1,105 +1,40 @@
-# S4.5 — Publish adapters: blog + Reddit (idempotent + paced) · issue #23
+# S4.6 — Per-channel kill switch (#24)
 
-API-first publishing (TECH_SPEC §7, §8.2/§8.3, PRD FR-21/FR-25, USER_STORIES S4.5).
-Owned blog (zero ToS risk) + Reddit (PRAW). No browser fallback; IG/X/YouTube deferred.
-Continues the pipeline: `critic_passed`/`guard`-clean → **pace/schedule → publish → record metrics**.
+**Branch:** `feat/s4.6-kill-switch` · **Plan source:** self-authored (issue had ACs only)
 
-## Acceptance criteria (from issue)
-- [ ] `ChannelAdapter` Protocol (`publish`, `delete`); blog (file write) + Reddit (PRAW) adapters
-- [ ] Idempotent on `idempotency_key` (check remote before re-post)
-- [ ] Pacing: `scheduled_for` spread across cadence window + per-channel `daily_cap`
-- [ ] Results + per-item metrics recorded; transient failures retry
-- [ ] Reddit: value-first/non-promo policy + per-subreddit rules respected
+## What already exists (pre-seeded in S4.5)
+- `Channel.paused: bool = False` — `backend/app/models/channel.py:50`
+- `publish_scheduled` re-checks `channel.paused` immediately before publish — `publish.py:129` (AC #1 ✅ engine-side)
+- `pace_content` excludes paused channels — `publish.py:71`
+- Engine behavior already tested: `test_publish_paused_channel_kill_switch`, `test_pace_skips_paused_disabled_and_manual_channels`, autonomy-off halt (`tests/test_publish.py`)
+- Frontend `Channel.paused: boolean` type — `dashboard/lib/api.ts:88`
 
-## Design (self-authored plan — no architectural fork)
+## What's missing (the actual S4.6 deliverable)
+The operator control surface to *flip* the switch. No endpoint sets `paused`; no dashboard toggle.
 
-Two deterministic periodic passes (mirror `enqueue_due_cranks`: pure, `now` injected, one
-per-item state transition), plus adapters in the pre-existing empty `app/channels/` package
-(TECH_SPEC §88 puts publishing adapters there).
+## Plan (TDD)
 
-### 1. `app/channels/base.py` — adapter contract
-- `PublishResult` dataclass (`external_url: str`).
-- `Retryable(Exception)` — raised by adapters for transient failures (network/rate-limit).
-- `ChannelAdapter` Protocol: `publish(item, creds) -> PublishResult`, `delete(external_url, creds) -> None`.
-- `get_adapter(channel_type) -> ChannelAdapter` registry (blog, reddit).
+### Step 1 — Backend pause/resume endpoint
+- `backend/app/api/private/channels.py`: add `PATCH /{product_id}/{channel_id}/pause` with body `{paused: bool}` (new `PauseRequest` model), mirroring the existing checklist-toggle handler. Validate product + channel-belongs-to-product (404 otherwise), set `channel.paused`, bump `updated_at`, commit, return `Channel`.
 
-### 2. `app/channels/blog.py` — `BlogAdapter` (owned site, zero ToS risk)
-- `publish`: render item → HTML file under `workspace_path(slug)/site/blog/<post-slug>.html`
-  (post-slug from `meta_json.slug`, else item id). Returns `external_url =
-  https://{marketing_domain}/blog/<post-slug>` (falls back to `public_api_base_url` if no domain).
-  **Idempotent**: writing the same path is overwrite-safe; existence *is* the remote check.
-- `delete`: remove the file (feeds S4.7 retract). No-op if already gone.
-- Pure filesystem (no network) → tested directly, no injection needed.
+### Step 2 — Backend tests (RED first)
+- `backend/tests/test_channels_api.py`: `test_pause_and_resume_channel` (PATCH true → `paused=true`; PATCH false → `paused=false`), `test_pause_wrong_channel_404`.
+- End-to-end round-trip proving AC #2 via the real publish pass (in `test_publish.py`, reusing helpers): seed a due scheduled item → set `paused=True` → `publish_scheduled` skips (stays `scheduled`) → set `paused=False` → `publish_scheduled` publishes. (The API-driven flip is covered by the API test; this proves the halt/resume semantics.)
 
-### 3. `app/channels/reddit.py` — `RedditAdapter` (PRAW)
-- `publish`: lazy-`import praw` inside the method (module imports without praw; keeps the stub
-  path network-free), build a client from decrypted `reddit_oauth` creds, submit a self/text post
-  to the channel's target subreddit (+ optional flair) read from `channel.profile_json`; return the
-  permalink. Wrap PRAW/network errors in `Retryable`. Per-subreddit rules (subreddit, flair)
-  honored from `profile_json`; value-first/non-promo content is enforced **upstream** (critic S4.3 +
-  guard S4.4) — the adapter carries already-vetted copy.
-- `delete`: PRAW `submission.delete()` for retract.
-- The PRAW client factory is injectable so the mapping (item→submission, permalink extraction) is
-  tested with a fake submitter, no network — same seam style as `generate=`/`critique=`.
-- Add `praw` to `pyproject.toml` dependencies (spec-named lib).
+### Step 3 — Frontend API client + toggle UI
+- `dashboard/lib/api.ts`: add `setChannelPaused(productId, channelId, paused)` → `PATCH /channels/{id}/{cid}/pause`, mirroring `setChecklistItemStatus`.
+- `dashboard/app/products/[id]/channel-setup.tsx`: add a per-channel Pause/Resume control using the existing `run()` helper; show paused state visually.
 
-### 4. `app/modules/crank/publish.py` — pace + publish passes
-- `pace_content(session, now)`: for each enabled, autonomous, non-paused channel, take its
-  `CRITIC_PASSED` items (oldest first) and assign `scheduled_for` + `idempotency_key`
-  (`f"{channel.type}:{item.id}"`), status → `SCHEDULED`.
-  **Pacing rule** (deterministic, satisfies both "spread across window" + "daily_cap"): step
-  successive items by `interval = window / daily_cap` (window = product cadence, default weekly),
-  starting at `max(now, last_scheduled_for_channel + interval)`. `interval` ≥ 1 day guarantees ≤
-  `daily_cap` land in any 24 h and spreads them across the cadence window. `daily_cap` unset →
-  spread the batch evenly across the window (`interval = window / batch_size`).
-- `publish_scheduled(session, now, *, adapter_for=get_adapter)`: for each `SCHEDULED` item with
-  `scheduled_for <= now`, re-check `channel.paused`/`enabled` (kill-switch immediately before
-  publish, §7), then call the adapter. Per-item `try/except` + per-item `commit` → one failure
-  never blocks others (§8.3 crash isolation).
-  - success → `PUBLISHED`, set `external_url`/`published_at`, record one
-    `MetricEvent(stage=IMPRESSION, value=1, channel_id, content_item_id,
-    source=f"publish:{idempotency_key}")` (unique `source` ⇒ metric is idempotent too).
-  - `Retryable` → leave `SCHEDULED` (retried on the next tick; §8.4 heartbeat alerts on repeated
-    fail, S6.2 — that is the escalation, not a hard attempt cap).
-  - permanent `Exception` → `PUBLISH_FAILED` + `error`.
-  - already `PUBLISHED` items are never re-selected (status guard = primary idempotency).
+### Step 4 — Frontend test
+- `dashboard/lib/api.test.ts`: `setChannelPaused` PATCHes the pause endpoint with `{paused}` body.
 
-### 5. Wiring
-- `app/scheduler.py`: add a `_publish_tick` interval job (pace + publish) alongside the crank tick,
-  reusing `crank_check_interval_seconds` (no new config value needed).
-- `app/channels/__init__.py`: export the adapter surface.
+## Acceptance criteria
+- [ ] `channel.paused` checked immediately before every publish — **already satisfied** (publish.py:129); no regression
+- [ ] Pause halts new publishes within one cycle; resume restores schedule — proven by round-trip test (Step 2)
+- [ ] Dashboard toggle — Step 3
 
-## Deviations / assumptions
-- **Self-authored plan** — issue #23 had acceptance criteria but no plan comment.
-- **Publish runs inline in a periodic pass, not as a per-item `job_run`.** The spec says "retry via
-  the job_run worker loop"; an inline pass with per-item `try/except` + per-item commit is the
-  lazier equivalent (at-least-once + idempotency + crash isolation) and needs no new `job_run`
-  column or handler. Deviation noted; escalation for repeated transient failures is the S6.2
-  heartbeat alert, matching §8.4.
-- **Reddit crash-window**: PRAW submit is not natively idempotent; a crash between submit and the
-  status commit could double-post. Bounded and documented as a Known Limitation (same class as the
-  documented non-idempotent-cost limit). Blog publish *is* idempotent (file existence).
-- **Metrics** = one `IMPRESSION` seam row per publish (reach/attribution fills in P6); satisfies
-  "per-item metrics recorded" without inventing a new stage.
-- No new DB migration: all columns pre-seeded (S4.2). Dev-DB recreate is the accepted v1 path.
-
-## Tests (TDD, RED first) — `tests/test_publish.py`
-- **Pacing**: `critic_passed` → `SCHEDULED` with spread `scheduled_for` + `idempotency_key`; ≤
-  `daily_cap` per rolling day; successive crank batches keep spacing; paused/disabled/non-autonomous
-  channels skipped; cap-unset spreads across window.
-- **Publish** (stub adapter): due `SCHEDULED` → `PUBLISHED` + url + `published_at` + one
-  `MetricEvent`; not-yet-due skipped; `Retryable` → stays `SCHEDULED` (retried); permanent error →
-  `PUBLISH_FAILED` + error; already-`PUBLISHED` not re-published (adapter call count); paused channel
-  not published (kill-switch); one failing item doesn't block a sibling.
-- **BlogAdapter**: writes file into workspace site dir, returns url; re-publish overwrites (idempotent);
-  `delete` removes the file.
-- **RedditAdapter** (injected fake praw client): item→submission mapping, permalink returned,
-  subreddit/flair from `profile_json`; PRAW error → `Retryable`.
-
-## Gotchas (tasks/lessons.md)
-- Run `black`/`ruff`/`pytest` from `backend/` (not repo root).
-- Validate cheap preconditions before building the praw client (unknown-type / missing-creds must
-  fail identically with or without secrets).
-- No `gh pr edit --body` on this repo → REST PATCH. Verify head-SHA `mergeStateStatus == CLEAN`
-  before merge.
-- Keep the generate handler's S4.3/S4.4 invariants intact (this story only reads `critic_passed` rows).
+## Notes / assumptions
+- No new columns → no DB-recreate concern (lessons.md: v1 has no migrations). `paused` already shipped in S4.5.
+- Endpoint is unauthenticated like the rest of `/api/private` (v1 dashboard-trusted). No new auth in scope.
+- Reuse `PATCH` toggle pattern; no new dependency (ponytail).
+- Run black/ruff/pytest from `backend/`, not repo root (lessons.md).
