@@ -1,6 +1,47 @@
 # SaaS Marketing Engine — Working Plan
 
-## S4.2 — Text/social + SEO blog generators (with novelty) (#20)  ← ACTIVE
+## S4.3 — Critic + safety quality gate (one LLM call) (#21)  ← ACTIVE
+Self-authored plan (issue had ACs but no plan comment). No architectural fork. Refs USER_STORIES S4.3,
+TECH_SPEC §8.2, PRD FR-22. **Depends on S4.2** (extends the `generate` flow + `content_item`).
+
+Acceptance criteria (issue #21):
+- [ ] One Claude call → `{score, safety_pass, notes}` (critic tier ≠ generator tier)
+- [ ] `score < threshold` (default 0.7) → regenerate (max N, default 2) or skip+log
+- [ ] `safety_pass=false` → hard block (`guard_failed`)
+- [ ] Scores/notes persisted on `content_item`
+
+Design (autonomous, no fork — dictated by §8.2's per-item pipeline):
+1. **Critic call** (`ai/client.py`): `CriticVerdict{score: float 0-1, safety_pass: bool, notes: str}` +
+   `critique_content(client, product_name, brand_kit, content_type, title, body)` → `(verdict, cost)`.
+   `CRITIC_MODEL="claude-haiku-4-5"` (the only tier ≠ the generator's opus-4-8 in RATES → satisfies
+   "different tier"; also the cheap/independent choice). `CRITIC_MAX_TOKENS`. Same parse() pattern.
+2. **Config** (`config.py`): `critic_score_threshold: float = 0.7`, `critic_max_regenerations: int = 2`
+   (the AC's "default" language → configurable).
+3. **Integrate into `run_generate`** (`modules/crank/generate.py`) rather than a separate handler:
+   §8.2 is one flow per item, and "regenerate" re-invokes the generator (which lives here). Loop up to
+   `1 + max_regenerations` attempts: generate candidate → critique → (a) `safety_pass=false` →
+   persist `GUARD_FAILED` + score/notes, stop (hard block, no regen); (b) `score >= threshold` →
+   persist `CRITIC_PASSED` + score/notes, stop; (c) else regenerate if attempts remain. Exhausted →
+   persist `CRITIC_FAILED` (skip+log) with the last verdict. **One ContentItem row per cell** (only the
+   final candidate persisted) — keeps novelty exclusion (`_TERMINAL_FAILURE`) working. Inject `critique=`
+   seam (mirrors `generate=`) for network-free tests. Budget: reserve one gen+critic attempt before
+   each pass; can't afford the first → RuntimeError; can't afford a regeneration → stop + skip+log.
+4. **Tests** (`tests/test_critic.py`): pass (score≥0.7 → CRITIC_PASSED + score/notes persisted);
+   low-then-pass (regenerate once → PASSED, 2 gen + 2 critic costs summed); low-always (exhaust N →
+   CRITIC_FAILED, exactly 1+N attempts); safety fail (→ GUARD_FAILED, no regeneration, 1 attempt);
+   verdict persisted on the row; budget stops regeneration (skip+log); one row per cell; worker path
+   records total cost; key-gated real-API critic call.
+
+Autonomous decisions (safe defaults): critic integrated into the generate flow (vs separate handler) —
+§8.2 single-flow + regenerate re-invokes the generator; critic tier = haiku (forced by "different tier"
++ available tiers); one row per cell (final candidate only); regeneration is a fresh generate call
+(critic notes NOT fed back into the prompt — YAGNI; sampling varies output; note as a limitation).
+
+Verify: `uv run pytest` 100%; ruff+black (from backend/); deslop; codex cross-family; demo all 4 ACs.
+
+---
+
+## S4.2 — Text/social + SEO blog generators (with novelty) (#20)
 Self-authored plan (issue had ACs but no plan comment). No architectural fork — fills the
 `@handler("generate")` seam S4.1 left. **Scope: the *generate* step only** — critic+safety (S4.3),
 deterministic guard (S4.4), publish (S4.5) land later. Refs USER_STORIES S4.2, TECH_SPEC §8.2, PRD FR-20/FR-24.

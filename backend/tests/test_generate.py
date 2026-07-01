@@ -1,8 +1,9 @@
 """S4.2: content generators (social + blog) with novelty + budget gating.
 
-Drives the `generate` handler against a real SQLite file with the LLM work injected (a stub
-generator), so the worker wiring, novelty gathering, budget gate, and persistence are all exercised
-without a network call. One key-gated integration test hits the real API.
+Drives the `generate` handler against a real SQLite file with the LLM work injected (stub generator
++ stub critic), so the worker wiring, novelty gathering, budget gate, and persistence are exercised
+without a network call. The S4.3 critic-gate behaviors live in test_critic.py; here the critic is a
+fixed passing verdict. One key-gated integration test hits the real API.
 """
 
 import json
@@ -11,7 +12,7 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.ai.client import BrandKit, VoiceDescriptor
+from app.ai.client import BrandKit, CriticVerdict, VoiceDescriptor
 from app.config import settings
 from app.models import (
     Channel,
@@ -99,6 +100,11 @@ def _gen_job(session, product_id, channel_id, content_type):
     )
 
 
+def _pass_critique(product, brand_kit, content_type, gen):
+    """A fixed passing verdict (cost 2) so the S4.2 tests don't invoke the real critic."""
+    return CriticVerdict(score=0.9, safety_pass=True, notes="looks good"), 2
+
+
 # --- persistence + metadata (AC1) --------------------------------------------------------------
 
 
@@ -111,13 +117,13 @@ def test_persists_social_item_with_pillar_metadata(session):
     def stub(product, brief, brand_kit, content_type, recent_items):
         return Generated(body="hello world", meta={"pillar": "onboarding", "hashtags": ["#x"]}), 7
 
-    cost = run_generate(job, session, generate=stub)
+    cost = run_generate(job, session, generate=stub, critique=_pass_critique)
     session.commit()
 
-    assert cost == 7
+    assert cost == 9  # 7 (generate) + 2 (critic)
     item = session.exec(select(ContentItem)).one()
     assert item.content_type == ContentType.SOCIAL.value
-    assert item.status == ContentItemStatus.GENERATED
+    assert item.status == ContentItemStatus.CRITIC_PASSED  # passed the S4.3 gate
     assert item.channel_id == c.id
     assert item.title is None
     assert item.body == "hello world"
@@ -134,7 +140,7 @@ def test_persists_blog_item_with_title_and_seo_metadata(session):
         meta = {"pillar": "automation", "slug": "how-to", "meta_description": "desc"}
         return Generated(title="How To", body="# Body", meta=meta), 30
 
-    run_generate(job, session, generate=stub)
+    run_generate(job, session, generate=stub, critique=_pass_critique)
     session.commit()
 
     item = session.exec(select(ContentItem)).one()
@@ -250,7 +256,7 @@ def test_recent_items_fed_to_generator_newest_first(session):
         captured["recent"] = recent_items
         return Generated(title="t", body="new", meta={"pillar": "x"}), 1
 
-    run_generate(job, session, generate=stub)
+    run_generate(job, session, generate=stub, critique=_pass_critique)
 
     assert captured["recent"] == ["newer", "older"]  # newest first, failed item excluded
 
@@ -270,7 +276,7 @@ def test_recent_items_scoped_per_channel(session):
         captured["recent"] = recent_items
         return Generated(title="t", body="b", meta={"pillar": "x"}), 1
 
-    run_generate(job, session, generate=stub)
+    run_generate(job, session, generate=stub, critique=_pass_critique)
     assert captured["recent"] == []  # the reddit item does not bleed into the blog channel
 
 
@@ -312,7 +318,10 @@ def test_zero_budget_is_unlimited(session):
     job = _gen_job(session, p.id, c.id, ContentType.BLOG.value)
 
     run_generate(
-        job, session, generate=lambda *a, **k: (Generated(title="t", body="b", meta={}), 5)
+        job,
+        session,
+        generate=lambda *a, **k: (Generated(title="t", body="b", meta={}), 5),
+        critique=_pass_critique,
     )
     session.commit()
     assert session.exec(select(ContentItem)).one().body == "b"
@@ -332,11 +341,12 @@ def test_cost_recorded_on_job_run_via_worker(session, monkeypatch):
         "_GENERATE",
         lambda *a, **k: (Generated(title="t", body="b", meta={"pillar": "x"}), 42),
     )
+    monkeypatch.setattr(gen_mod, "_CRITIQUE", _pass_critique)  # cost 2
     run_due_jobs(session)
 
     session.refresh(job)
     assert job.status == JobStatus.DONE
-    assert job.token_cost_cents == 42
+    assert job.token_cost_cents == 44  # 42 (generate) + 2 (critic)
     assert session.exec(select(ContentItem)).one().body == "b"
 
 

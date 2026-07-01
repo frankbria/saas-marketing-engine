@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     # How often the scheduler checks which products are due for a crank (S4.1). The crank *cadence*
     # itself is per-product (default weekly); this is just the polling granularity. Hourly is ample.
     crank_check_interval_seconds: int = 3600
+
+    # S4.3 critic + safety quality gate. One critic call per generated item scores it 0-1; below the
+    # threshold the generator is re-run up to `critic_max_regenerations` times, then the item is
+    # skipped+logged (`critic_failed`). A safety failure hard-blocks regardless (`guard_failed`).
+    # Bounded so a bad deploy value fails loudly at startup rather than disabling/breaking the gate
+    # (threshold outside [0,1] would silently pass-all or skip-all; a negative count runs nothing).
+    critic_score_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    # Upper-bounded too: even though the per-attempt budget reservation caps real spend, a bad
+    # config value like 100000 would still let one item fan out to absurdly many LLM calls.
+    critic_max_regenerations: int = Field(default=2, ge=0, le=10)
 
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.
