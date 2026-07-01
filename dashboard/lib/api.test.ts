@@ -123,6 +123,19 @@ describe("channels + setup checklist (S2.6)", () => {
     expect(init?.body).toBe(JSON.stringify({ access_token: "tok" }))
   })
 
+  it("connectChannel POSTs the structured Reddit credential (S4.8.1)", async () => {
+    const fetchMock = mockFetch({ connect_state: "connected" })
+    const reddit = {
+      client_id: "cid",
+      client_secret: "sec",
+      refresh_token: "rt",
+      user_agent: "ua",
+    }
+    await connectChannel(7, 3, { reddit })
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init?.body).toBe(JSON.stringify({ reddit }))
+  })
+
   it("setChecklistItemStatus PATCHes the item", async () => {
     const fetchMock = mockFetch({ status: "done" })
     await setChecklistItemStatus(7, 9, "done")

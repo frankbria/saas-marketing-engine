@@ -1,6 +1,12 @@
 """ORM models (TECH_SPEC §4). Import each so it registers on SQLModel.metadata."""
 
-from app.models.channel import AUTONOMOUS_TYPES, Channel, ChannelType, ConnectState
+from app.models.channel import (
+    AUTONOMOUS_TYPES,
+    SELF_MANAGED_TYPES,
+    Channel,
+    ChannelType,
+    ConnectState,
+)
 from app.models.content_item import ContentItem, ContentItemStatus
 from app.models.credential import Credential
 from app.models.funnel_event import FunnelEvent, FunnelEventType
@@ -13,6 +19,7 @@ from app.models.strategy_brief import StrategyBrief
 
 __all__ = [
     "AUTONOMOUS_TYPES",
+    "SELF_MANAGED_TYPES",
     "Channel",
     "ChannelType",
     "ConnectState",

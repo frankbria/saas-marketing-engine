@@ -30,6 +30,12 @@ class ConnectState(StrEnum):
 # v1: only these post autonomously; the rest are enabled but human-assisted (Revision 0.2).
 AUTONOMOUS_TYPES = frozenset({ChannelType.BLOG, ChannelType.REDDIT})
 
+# Providers whose stored credential is a structured self-managed blob (the provider's own client
+# refreshes access tokens under the hood) rather than a bare access token we hold and refresh.
+# Reddit stores PRAW kwargs as JSON under `reddit_oauth`; `/connect` writes that shape and
+# `oauth_refresh.is_self_managed_credential` classifies it so proactive refresh is skipped (S4.8.1).
+SELF_MANAGED_TYPES = frozenset({ChannelType.REDDIT})
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)

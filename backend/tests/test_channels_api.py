@@ -1,16 +1,23 @@
-"""S2.6: channels API — setup trigger gates, list endpoints, OAuth connect (real vault), toggles."""
+"""S2.6/S4.8.1: channels API — setup trigger gates, list endpoints, OAuth connect (real vault),
+per-provider credential shape (self-managed Reddit vs owned bare token), toggles."""
+
+import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
+from app.channels.reddit import RedditAdapter
 from app.db import get_session
 from app.main import create_app
 from app.models import (
     Channel,
     ChannelType,
     ConnectState,
+    ContentItem,
+    ContentItemStatus,
     LifecycleState,
     Product,
     SetupChecklistItem,
@@ -114,39 +121,90 @@ def test_list_channels_and_checklist(ctx):
     assert len(items) == 1 and items[0]["category"] == "account"
 
 
-# ---- OAuth connect ----------------------------------------------------------------------
+# ---- OAuth connect (S4.8.1: per-provider credential shape) -------------------------------
+
+_PRAW = {"client_id": "cid", "client_secret": "sec", "refresh_token": "rt", "user_agent": "ua"}
 
 
-def test_connect_stores_token_in_vault_and_marks_connected(ctx):
+def test_connect_reddit_stores_praw_kwargs(ctx):
+    """Reddit is self-managed (PRAW): the documented shape is a PRAW-kwargs JSON blob, stored
+    under reddit_oauth so RedditAdapter._parse_creds can consume it (AC1/AC2)."""
     c, engine = ctx
     pid = _seed_product(engine)
-    cid = _seed_channel(engine, pid)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.REDDIT)
+
+    resp = c.post(
+        f"/api/private/channels/{pid}/{cid}/connect",
+        json={"reddit": _PRAW, "account_ref": "u/auto"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["connect_state"] == ConnectState.CONNECTED
+    assert body["account_ref"] == "u/auto"
+
+    with Session(engine) as s:
+        stored = vault.get_credential(s, pid, "reddit_oauth", channel_id=cid)
+        # the stored value is exactly the PRAW-kwargs JSON object the adapter parses
+        assert json.loads(stored) == _PRAW
+        # self-managed: no separate bare-token refresh credential is written (PRAW self-refreshes)
+        assert vault.get_credential(s, pid, "reddit_oauth_refresh", channel_id=cid) is None
+
+        from sqlmodel import select
+
+        from app.models import Credential
+
+        cred = s.exec(select(Credential).where(Credential.key == "reddit_oauth")).first()
+        assert "cid" not in cred.ciphertext  # only ciphertext at rest
+
+
+def test_connect_reddit_missing_creds_400(ctx):
+    """A self-managed channel with no `reddit` block is rejected — no bare-token footgun."""
+    c, engine = ctx
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.REDDIT)
+    assert (
+        c.post(
+            f"/api/private/channels/{pid}/{cid}/connect", json={"access_token": "tok"}
+        ).status_code
+        == 400
+    )
+
+
+def test_connect_reddit_blank_field_rejected(ctx):
+    """A blank/whitespace PRAW field is rejected (422) rather than stored as a connected-but-broken
+    credential — parity with the owned path's empty-token guard."""
+    c, engine = ctx
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.REDDIT)
+    creds = {**_PRAW, "client_id": "   "}
+    assert (
+        c.post(f"/api/private/channels/{pid}/{cid}/connect", json={"reddit": creds}).status_code
+        == 422
+    )
+
+
+def test_connect_owned_token_stores_bare(ctx):
+    """Owned (bare-token) providers keep the access_token/refresh_token path unchanged."""
+    c, engine = ctx
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
 
     resp = c.post(
         f"/api/private/channels/{pid}/{cid}/connect",
         json={"access_token": "tok-abc", "refresh_token": "ref-xyz", "account_ref": "@auto"},
     )
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["connect_state"] == ConnectState.CONNECTED
-    assert body["account_ref"] == "@auto"
+    assert resp.json()["connect_state"] == ConnectState.CONNECTED
 
-    # token is retrievable + encrypted at rest (channel-scoped)
     with Session(engine) as s:
-        assert vault.get_credential(s, pid, "reddit_oauth", channel_id=cid) == "tok-abc"
-        assert vault.get_credential(s, pid, "reddit_oauth_refresh", channel_id=cid) == "ref-xyz"
-        from sqlmodel import select
-
-        from app.models import Credential
-
-        cred = s.exec(select(Credential).where(Credential.key == "reddit_oauth")).first()
-        assert "tok-abc" not in cred.ciphertext  # only ciphertext at rest
+        assert vault.get_credential(s, pid, "x_oauth", channel_id=cid) == "tok-abc"
+        assert vault.get_credential(s, pid, "x_oauth_refresh", channel_id=cid) == "ref-xyz"
 
 
-def test_connect_empty_token_400(ctx):
+def test_connect_owned_empty_token_400(ctx):
     c, engine = ctx
     pid = _seed_product(engine)
-    cid = _seed_channel(engine, pid)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.X)
     assert (
         c.post(f"/api/private/channels/{pid}/{cid}/connect", json={"access_token": ""}).status_code
         == 400
@@ -160,6 +218,71 @@ def test_connect_wrong_channel_404(ctx):
         c.post(f"/api/private/channels/{pid}/999/connect", json={"access_token": "t"}).status_code
         == 404
     )
+
+
+class _FakeSubmission:
+    permalink = "/r/test/comments/xyz/hi/"
+
+
+class _FakeSubreddit:
+    def submit(self, *, title, selftext, flair_id):
+        return _FakeSubmission()
+
+
+class _FakeReddit:
+    """Minimal PRAW stand-in: no prior submissions, records nothing but a successful submit."""
+
+    def __init__(self):
+        self.user = SimpleNamespace(
+            me=lambda: SimpleNamespace(submissions=SimpleNamespace(new=lambda limit=None: []))
+        )
+
+    def subreddit(self, name):
+        return _FakeSubreddit()
+
+
+def test_connect_reddit_then_publish_end_to_end(ctx, monkeypatch):
+    """AC3: a Reddit channel connected via the documented /connect flow publishes end-to-end —
+    real vault round-trip + a fake PRAW client. Proves the stored shape is exactly what the
+    adapter builds its client from."""
+    c, engine = ctx
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid, ctype=ChannelType.REDDIT)
+
+    resp = c.post(f"/api/private/channels/{pid}/{cid}/connect", json={"reddit": _PRAW})
+    assert resp.status_code == 200
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        "app.channels.reddit._build_reddit",
+        lambda creds: (captured.update(creds=creds), _FakeReddit())[1],
+    )
+
+    with Session(engine) as s:
+        product = s.get(Product, pid)
+        channel = s.get(Channel, cid)
+        channel.profile_json = json.dumps({"subreddit": "test"})
+        s.add(channel)
+        item = ContentItem(
+            product_id=pid,
+            channel_id=cid,
+            content_type="reddit",
+            status=ContentItemStatus.SCHEDULED,
+            title="Launch",
+            body="value first",
+            idempotency_key="reddit:1",
+        )
+        s.add(item)
+        s.commit()
+        s.refresh(item)
+        s.refresh(channel)
+
+        creds = vault.get_credential(s, pid, "reddit_oauth", channel_id=cid)
+        result = RedditAdapter().publish(item, product, channel, creds)
+
+    assert result.external_url == "https://www.reddit.com/r/test/comments/xyz/hi/"
+    # the client was built from exactly the PRAW kwargs we connected with — shape round-trips
+    assert captured["creds"] == _PRAW
 
 
 # ---- checklist toggle -------------------------------------------------------------------
