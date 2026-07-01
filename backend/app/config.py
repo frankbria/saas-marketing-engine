@@ -111,12 +111,13 @@ class Settings(BaseSettings):
     @field_validator("oauth_redirect_base_url")
     @classmethod
     def _require_https_off_localhost(cls, v: str) -> str:
-        # OAuth `code`/`state` ride this origin's callback; plaintext http off localhost would
-        # expose them on the wire. Allow http only for loopback (dev); require https otherwise —
-        # fail loud at startup rather than silently shipping an insecure redirect.
-        host = urlsplit(v).hostname or ""
-        is_loopback = host in ("localhost", "127.0.0.1", "::1")
-        if v.startswith("http://") and not is_loopback:
+        # OAuth `code`/`state` ride this origin's callback; a non-https scheme off localhost would
+        # expose them on the wire. Loopback (dev) may use http; every other host must be https —
+        # fail loud at startup rather than silently shipping an insecure redirect. Requiring https
+        # (not just rejecting `http://`) also closes uppercase/other-scheme/scheme-less bypasses.
+        parts = urlsplit(v)
+        is_loopback = (parts.hostname or "") in ("localhost", "127.0.0.1", "::1")
+        if not is_loopback and parts.scheme.lower() != "https":
             raise ValueError(
                 f"oauth_redirect_base_url must use https off localhost (got {v!r}) — OAuth "
                 "code/state would otherwise cross the network in plaintext"
