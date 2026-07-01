@@ -1,6 +1,50 @@
 # SaaS Marketing Engine — Working Plan
 
-## S4.1 — Scheduled crank (APScheduler + worker loop) (#19)  ← ACTIVE
+## S4.2 — Text/social + SEO blog generators (with novelty) (#20)  ← ACTIVE
+Self-authored plan (issue had ACs but no plan comment). No architectural fork — fills the
+`@handler("generate")` seam S4.1 left. **Scope: the *generate* step only** — critic+safety (S4.3),
+deterministic guard (S4.4), publish (S4.5) land later. Refs USER_STORIES S4.2, TECH_SPEC §8.2, PRD FR-20/FR-24.
+
+Acceptance criteria (issue #20):
+- [ ] `social` + `blog` generators produce items with metadata, referencing content pillars
+- [ ] Recent published items fed into the prompt to avoid near-duplicates (novelty)
+- [ ] Token cost logged per `job_run` + budget-checked
+
+Design (autonomous, no fork — mirrors the S1.1/S1.2 handler pattern):
+1. **`ContentItem` model** (`app/models/content_item.py`, register in `models/__init__`): follows the
+   "nullable seam" convention (job_run/metric_event). S4.2 sets `product_id, channel_id, content_type,
+   status=GENERATED, title, body, meta_json` (holds referenced pillar + per-type metadata). Pipeline
+   columns later stories fill (`critic_score, critic_notes, idempotency_key, scheduled_for,
+   published_at, external_url, error`) added now as nullable seams → no SQLite ALTER across S4.3–S4.5
+   (no migration tooling in v1; schema is `create_all`). `ContentItemStatus` enum carries the full
+   TECH_SPEC §4 state set; S4.2 only sets `GENERATED`.
+2. **Generator LLM calls** (`app/ai/client.py`, same `parse()` + parsed_output-scan pattern):
+   `SocialPost{body, hashtags, pillar}` + `generate_social_post(...)`; `BlogArticle{title, slug,
+   meta_description, body, pillar}` + `generate_blog_article(...)`. Both take `recent_items: list[str]`
+   and instruct the model to avoid repeating them (novelty). `GEN_MODEL="claude-opus-4-8"` (already
+   priced; critic uses a different tier in S4.3).
+3. **`generate` handler** (new `app/modules/crank/generate.py`; remove the stub from `crank.py`,
+   import new module in `main.py`): validate cell (keep LookupError guard) → budget gate (reuse
+   `month_to_date_cost_cents`, reserve `GEN_MAX_TOKENS` before the call) → load Product
+   (`BrandKit.model_validate_json(brand_json)`) + StrategyBrief (pillars, positioning) → novelty:
+   fetch most-recent N ContentItems for (product,channel) excluding terminal-failure states → route on
+   `content_type` (social/blog) → persist one ContentItem(status=GENERATED). No handler commit (worker
+   commits atomically with job DONE + token_cost_cents). Injected `generate=` fn for testability.
+4. **Tests** (`tests/test_generate.py`, stub-injected + key-gated integration): persist+routing
+   (pillar in metadata, social AND blog) → AC1; novelty (recent items fetched + passed) → AC2;
+   budget gate (prior spend ≥ budget → RuntimeError, job FAILED, no ContentItem) + cost recording via
+   `enqueue → run_due_jobs` → AC3; missing-field guard still raises LookupError.
+
+Autonomous decisions (safe defaults, no fork): full ContentItem schema now (nullable seams, matches
+TECH_SPEC §4 + repo convention, avoids SQLite ALTER churn); generator tier = Opus (already priced);
+"recent published items" pre-S4.5 = most-recent ContentItems for the channel by `created_at` (naturally
+narrows to published once S4.5 sets `published_at`).
+
+Verify: `uv run pytest` 100%; ruff+black; deslop; codex cross-family review; demo all 3 ACs with evidence.
+
+---
+
+## S4.1 — Scheduled crank (APScheduler + worker loop) (#19)
 Self-authored plan (no plan comment on issue; only ACs). No architectural fork — worker.py already
 anticipates this ("real crank handlers register here in P4"); `job_run` worker loop + retries exist.
 Refs USER_STORIES S4.1, TECH_SPEC §8.1, PRD FR-19. **Scope: scheduling + fan-out ONLY** — the

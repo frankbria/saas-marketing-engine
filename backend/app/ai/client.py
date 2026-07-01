@@ -37,6 +37,10 @@ CHANNEL_MAX_TOKENS = 2000  # output cap for channel profiles (also the budget-re
 QA_MODEL = "claude-opus-4-8"  # click-through QA checklist generation (S3.1)
 QA_MAX_TOKENS = 2000  # output cap for the QA checklist (also the budget-reservation ceiling)
 
+GEN_MODEL = "claude-opus-4-8"  # content generators — social + blog (S4.2)
+GEN_SOCIAL_MAX_TOKENS = 1000  # output cap for one social post (also the budget-reservation ceiling)
+GEN_BLOG_MAX_TOKENS = 4000  # output cap for one SEO blog article (also the reservation ceiling)
+
 
 class ICP(BaseModel):
     segment: str
@@ -150,6 +154,26 @@ class QaChecklist(BaseModel):
     """The ordered click-through checklist the single Opus call returns (S3.1)."""
 
     steps: list[QaStep] = Field(min_length=1)
+
+
+class SocialPost(BaseModel):
+    """One social post the generator returns (S4.2). `pillar` echoes which content pillar it
+    addresses (the AC's "referencing content pillars") — the handler stores it as metadata."""
+
+    body: str = Field(min_length=1)  # the post copy, ready to publish
+    hashtags: list[str] = Field(default_factory=list)
+    pillar: str
+
+
+class BlogArticle(BaseModel):
+    """One SEO blog article the generator returns (S4.2). Carries the SEO metadata slots
+    (`slug`, `meta_description`) plus the addressed content pillar."""
+
+    title: str = Field(min_length=1)
+    slug: str = Field(min_length=1)
+    meta_description: str = Field(min_length=1)
+    body: str = Field(min_length=1)  # markdown
+    pillar: str
 
 
 def build_client() -> anthropic.Anthropic:
@@ -453,3 +477,111 @@ def generate_qa_checklist(
         )
     cost = cost_cents(QA_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return checklist, cost
+
+
+def _novelty_block(recent_items: list[str]) -> str:
+    """Render recent published items as a 'don't repeat these' block for the generator prompt."""
+    if not recent_items:
+        return "Recent items for this channel: (none yet — this is the first)."
+    joined = "\n".join(f"- {item}" for item in recent_items)
+    return (
+        "Recent items already published on this channel — do NOT repeat their themes, angles, "
+        f"hooks, or phrasing (near-duplicate content is itself a spam signal):\n{joined}"
+    )
+
+
+def generate_social_post(
+    client: anthropic.Anthropic,
+    product_name: str,
+    brand_kit: BrandKit,
+    positioning: str,
+    content_pillars: list[str],
+    recent_items: list[str],
+) -> tuple[SocialPost, int]:
+    """Generate one on-brand social post referencing a pillar (S4.2). Returns (post, cost)."""
+    voice = (
+        "; ".join(f"{d.descriptor}: {d.guidance}" for d in brand_kit.voice_descriptors) or "(none)"
+    )
+    pillars = ", ".join(content_pillars) or "(none)"
+    user = (
+        f"Product: {product_name}\n"
+        f"Positioning: {positioning or '(none)'}\n"
+        f"Brand tone: {brand_kit.tone}\n"
+        f"Brand voice: {voice}\n"
+        f"Content pillars: {pillars}\n\n"
+        f"{_novelty_block(recent_items)}\n\n"
+        "Write ONE social post that advances the product's marketing. Choose exactly one content "
+        "pillar from the list and echo it as `pillar`. Keep it on-brand for the voice, value-first "
+        "(not spammy), and idiomatic to a community feed. Add a few relevant hashtags."
+    )
+    response = client.messages.parse(
+        model=GEN_MODEL,
+        max_tokens=GEN_SOCIAL_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a social content creator for a SaaS product. Write value-first, on-brand "
+            "posts a real community would welcome — never spammy or repetitive. Ground every post "
+            "in one of the given content pillars and echo which one."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=SocialPost,
+    )
+    # adaptive thinking may emit a thinking block first — scan for the text block with the object.
+    post = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if post is None:  # refusal or unparsable — surface, don't persist an empty item
+        raise RuntimeError(
+            f"social generation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(GEN_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return post, cost
+
+
+def generate_blog_article(
+    client: anthropic.Anthropic,
+    product_name: str,
+    brand_kit: BrandKit,
+    positioning: str,
+    content_pillars: list[str],
+    recent_items: list[str],
+) -> tuple[BlogArticle, int]:
+    """Generate one on-brand SEO blog article for a pillar (S4.2). Returns (article, cost)."""
+    voice = (
+        "; ".join(f"{d.descriptor}: {d.guidance}" for d in brand_kit.voice_descriptors) or "(none)"
+    )
+    pillars = ", ".join(content_pillars) or "(none)"
+    user = (
+        f"Product: {product_name}\n"
+        f"Positioning: {positioning or '(none)'}\n"
+        f"Brand tone: {brand_kit.tone}\n"
+        f"Brand voice: {voice}\n"
+        f"Content pillars: {pillars}\n\n"
+        f"{_novelty_block(recent_items)}\n\n"
+        "Write ONE SEO blog article that advances the product's marketing. Choose exactly one "
+        "content pillar from the list and echo it as `pillar`. Return a title, a URL slug, an SEO "
+        "meta description, and the article body in markdown. Keep it on-brand, genuinely useful, "
+        "and distinct from the recent items above."
+    )
+    response = client.messages.parse(
+        model=GEN_MODEL,
+        max_tokens=GEN_BLOG_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are an SEO content writer for a SaaS product. Write genuinely useful, on-brand "
+            "articles grounded in one of the given content pillars (echo which one). Produce clean "
+            "SEO metadata (a concise slug and a compelling meta description) and a markdown body."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=BlogArticle,
+    )
+    # adaptive thinking may emit a thinking block first — scan for the text block with the object.
+    article = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if article is None:  # refusal or unparsable — surface, don't persist an empty item
+        raise RuntimeError(f"blog generation returned nothing (stop_reason={response.stop_reason})")
+    cost = cost_cents(GEN_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return article, cost

@@ -173,45 +173,18 @@ def test_crank_with_no_channels_does_nothing_but_succeeds(session):
     assert session.exec(select(JobRun).where(JobRun.kind == "generate")).all() == []
 
 
-# --- generate seam (S4.2 fills the real pipeline) ----------------------------------------------
+# --- generate fan-out wiring (the real generate step is S4.2 — see test_generate.py) -----------
 
 
-def test_generate_seam_validates_cell_and_succeeds(session):
+def test_crank_fans_out_queued_generate_child(session):
     p = _product(session, slug="live")
     c = _channel(session, p.id, ChannelType.BLOG)
-    job = JobRun(
-        kind="generate", product_id=p.id, channel_id=c.id, content_type=ContentType.BLOG.value
-    )
-    session.add(job)
-    session.commit()
-
-    run_due_jobs(session)
-    session.refresh(job)
-    assert job.status == JobStatus.DONE
-    assert job.token_cost_cents == 0
-
-
-def test_generate_without_cell_identity_fails(session):
-    job = JobRun(kind="generate", product_id=None)  # missing channel_id/content_type
-    session.add(job)
-    session.commit()
-
-    run_due_jobs(session)
-    session.refresh(job)
-    assert job.status == JobStatus.FAILED
-    assert job.attempts == 1  # config error — no point retrying
-
-
-# --- end-to-end round trip ---------------------------------------------------------------------
-
-
-def test_crank_to_generate_round_trip(session):
-    p = _product(session, slug="live")
-    _channel(session, p.id, ChannelType.BLOG)
 
     enqueue_due_cranks(session, NOW)
-    run_due_jobs(session)  # crank → DONE, enqueues 1 generate child (QUEUED)
-    run_due_jobs(session)  # generate child → DONE
+    run_due_jobs(session)  # crank → DONE, enqueues 1 generate child (QUEUED, awaiting S4.2 handler)
 
-    jobs = {j.kind: j.status for j in session.exec(select(JobRun)).all()}
-    assert jobs == {"crank": JobStatus.DONE, "generate": JobStatus.DONE}
+    crank = session.exec(select(JobRun).where(JobRun.kind == "crank")).one()
+    child = session.exec(select(JobRun).where(JobRun.kind == "generate")).one()
+    assert crank.status == JobStatus.DONE
+    assert child.status == JobStatus.QUEUED
+    assert (child.channel_id, child.content_type) == (c.id, ContentType.BLOG.value)
