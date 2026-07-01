@@ -126,23 +126,30 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   `ChannelType.REDDIT`). Children carry `channel_id`/`content_type` for per-cell crash isolation;
   added (not committed) here — the worker commits them atomically with the crank's DONE status.
 
-### Content generators — social + SEO blog (S4.2)
+### Content generators — social + SEO blog (S4.2 + S4.3)
 
 - `models/content_item.py` — `ContentItem` + `ContentItemStatus`: one row per generated piece,
   scoped by `(product_id, channel_id, content_type)`. Full pipeline state set (`generated →
   critic_passed/failed → guard_failed → scheduled → published → retracted`); nullable seam columns
   (`critic_*`, `idempotency_key`, `scheduled_for`, `published_at`, `external_url`, `error`) are
   pre-seeded so S4.3–S4.7 need no `ALTER TABLE` (no Alembic in v1).
-- `modules/crank/generate.py` — `@handler("generate")`: budget-gated per-cell content generator
-  (mirrors `brief.py`: pre-check + reservation before the LLM call, injected `generate=` fn for
-  testability). Loads product + brief + brand kit; fetches the 5 most-recent non-failed items for
-  novelty; calls `generate_social_post` or `generate_blog_article`; validates the returned pillar
-  against the brief's content pillars; persists `ContentItem(status=GENERATED)`. No commit here —
-  the worker commits it atomically with the job's DONE status + cost.
-- `ai/client.py` additions — `SocialPost` and `BlogArticle` structured-output models;
-  `generate_social_post` / `generate_blog_article` using `claude-opus-4-8` with adaptive thinking
-  and a novelty block of recent items so the model avoids near-duplicate themes. Token caps:
-  `GEN_SOCIAL_MAX_TOKENS=1000`, `GEN_BLOG_MAX_TOKENS=4000`.
+- `modules/crank/generate.py` — `@handler("generate")`: budget-gated generate → critic+safety gate
+  loop (TECH_SPEC §8.2). Loads product + brief + brand kit; fetches recent items for novelty; calls
+  `generate_social_post` or `generate_blog_article`; validates the pillar; then calls
+  `critique_content` (haiku tier, a different tier than the generator) to score quality 0–1 and
+  decide safety — one call, not two passes. A safety failure hard-blocks (`guard_failed`); a score ≥
+  `critic_score_threshold` (default 0.7) accepts (`critic_passed`); a low score regenerates up to
+  `critic_max_regenerations` times (default 2), then skips+logs the last candidate
+  (`critic_failed`). Exactly one `ContentItem` is persisted per cell with its final status, critic
+  score, and critic notes. Injected `generate=`/`critique=` fns keep the handler testable without a
+  network call. No commit here — the worker commits atomically with the job's DONE status + summed
+  cost.
+- `ai/client.py` additions — `SocialPost`, `BlogArticle`, and `CriticVerdict` structured-output
+  models; `generate_social_post` / `generate_blog_article` using `claude-opus-4-8` (`GEN_MODEL`)
+  with adaptive thinking and a novelty block; `critique_content` using `claude-haiku-4-5`
+  (`CRITIC_MODEL`) — a lighter, independent tier so the reviewer doesn't share the writer's blind
+  spots. Token caps: `GEN_SOCIAL_MAX_TOKENS=1000`, `GEN_BLOG_MAX_TOKENS=4000`,
+  `CRITIC_MAX_TOKENS=600`.
 
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
