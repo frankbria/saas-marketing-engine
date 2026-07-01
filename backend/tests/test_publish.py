@@ -600,6 +600,13 @@ from app.models import ConnectState  # noqa: E402
 from app.secrets import vault  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _vault_key(monkeypatch):
+    """Seed the Fernet vault key so credential-using tests work in CI (SME_VAULT_KEY unset there),
+    mirroring test_vault.py / test_channels_api.py. Autouse: harmless for the non-vault tests."""
+    monkeypatch.setattr(vault.settings, "vault_key", vault.generate_key())
+
+
 def _oauth_channel(session, product_id, *, expires_at, token="tok-old"):
     """A CONNECTED reddit channel with a stored oauth token expiring at `expires_at`."""
     c = _channel(
