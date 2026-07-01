@@ -132,7 +132,13 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   scoped by `(product_id, channel_id, content_type)`. Full pipeline state set (`generated →
   critic_passed/failed → guard_failed → scheduled → published → retracted`); nullable seam columns
   (`critic_*`, `idempotency_key`, `scheduled_for`, `published_at`, `external_url`, `error`) are
-  pre-seeded so S4.3–S4.7 need no `ALTER TABLE` (no Alembic in v1).
+  pre-seeded so S4.3–S4.7 need no `ALTER TABLE` (no Alembic in v1). The one post-hoc column,
+  `spot_check` (S4.9), is added to existing DBs by `db._backfill_additive_columns` (a guarded,
+  idempotent `ADD COLUMN` in `init_db`) rather than Alembic.
+- `modules/crank/generate.py` (S4.9 spot-check) — on persist, flags the channel's **first** item
+  plus a random **10%** (`SPOT_CHECK_RATE`) with `spot_check=true` for async review. The flag is set
+  once at creation, orthogonal to `status`, so it never blocks publishing. Surfaced by
+  `GET /api/private/content/{id}/spot-check` (newest first) and the dashboard **Spot-check queue**.
 - `modules/crank/generate.py` — `@handler("generate")`: budget-gated generate → critic+safety gate
   loop (TECH_SPEC §8.2). Loads product + brief + brand kit; fetches recent items for novelty; calls
   `generate_social_post` or `generate_blog_article`; validates the pillar; then calls
