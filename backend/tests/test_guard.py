@@ -84,6 +84,12 @@ def test_price_claim_traces_to_product():
     assert check_content(None, "All this for just $99 a month.", _brief(), prod) is None
 
 
+def test_decimal_price_claim_traces():
+    # $19.99 pricing must trace when copy quotes the real decimal price (not just whole dollars).
+    prod = _product(price_amount_cents=1999)
+    assert check_content(None, "Yours for $19.99/mo.", _brief(), prod) is None
+
+
 def test_untraceable_price_blocks():
     prod = _product(price_amount_cents=9900)  # $99, but the copy says $19
     reason = check_content(None, "A steal at $19/mo.", _brief(), prod)

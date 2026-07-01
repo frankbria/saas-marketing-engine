@@ -73,7 +73,13 @@ def _typed_fact_numbers(brief: StrategyBrief, product: Product) -> dict[str, set
     money = {_norm_number(m.group(1)) for m in _MONEY.finditer(text)}
     if product.price_amount_cents is not None:
         cents = product.price_amount_cents
-        money |= {_norm_number(str(cents)), _norm_number(str(cents // 100))}
+        # Cover the cent count, whole dollars, and the dollars.cents form ($19.99 → "19.99") so
+        # standard decimal pricing traces, not just whole-dollar prices.
+        money |= {
+            _norm_number(str(cents)),
+            _norm_number(str(cents // 100)),
+            _norm_number(f"{cents / 100:.2f}"),
+        }
     return {
         "percent": {_norm_number(m.group(1)) for m in _PERCENT.finditer(text)},
         "multiplier": {_norm_number(m.group(1)) for m in _MULTIPLIER.finditer(text)},
