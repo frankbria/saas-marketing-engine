@@ -520,6 +520,7 @@ def test_reddit_network_error_is_retryable(session, monkeypatch):
     p = _product(session)
     c = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "x"})
     it = _item(session, p.id, c.id)
+    it.idempotency_key = "reddit:1"
     with pytest.raises(Retryable):
         RedditAdapter().publish(it, p, c, json.dumps({"client_id": "x"}))
 
@@ -534,8 +535,29 @@ def test_reddit_permanent_error_propagates_not_retryable(session, monkeypatch):
     p = _product(session)
     c = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "x"})
     it = _item(session, p.id, c.id)
+    it.idempotency_key = "reddit:1"
     with pytest.raises(ValueError):  # not wrapped in Retryable
         RedditAdapter().publish(it, p, c, json.dumps({"client_id": "x"}))
+
+
+def test_reddit_missing_idempotency_key_fails_closed(session):
+    # No idempotency_key => the remote guard can't work; refuse the non-idempotent submit.
+    p = _product(session)
+    c = _channel(session, p.id, ctype=ChannelType.REDDIT, profile={"subreddit": "x"})
+    it = _item(session, p.id, c.id)  # idempotency_key defaults to None
+    with pytest.raises(RuntimeError, match="idempotency_key"):
+        RedditAdapter().publish(it, p, c, json.dumps({"client_id": "x"}))
+
+
+def test_reddit_ratelimit_api_exception_is_retryable():
+    # A RATELIMIT RedditAPIException is transient (Reddit's wait exceeded ratelimit_seconds); other
+    # RedditAPIException items (validation/auth) are permanent. praw is a real dependency here.
+    from praw.exceptions import RedditAPIException
+
+    from app.channels.reddit import _is_transient
+
+    assert _is_transient(RedditAPIException([["RATELIMIT", "doing that too much", None]])) is True
+    assert _is_transient(RedditAPIException([["NO_TEXT", "missing text", "title"]])) is False
 
 
 def test_get_adapter_rejects_deferred_type():

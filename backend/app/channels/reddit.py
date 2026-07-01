@@ -52,17 +52,24 @@ def _ref_marker(idempotency_key: str) -> str:
     return f"sme-ref:{idempotency_key}"
 
 
+def _embedded_marker(marker: str) -> str:
+    # The self-delimiting footer we actually write. Matching the whole `^(...)` (with the closing
+    # paren) avoids a prefix collision — bare `sme-ref:reddit:7` is a substring of `...:70`.
+    return f"^({marker})"
+
+
 def _body_with_marker(body: str, marker: str) -> str:
     # Reddit renders `^(...)` as small superscript — an unobtrusive footer on a value-first post.
-    return f"{body}\n\n^({marker})"
+    return f"{body}\n\n{_embedded_marker(marker)}"
 
 
 def _existing_permalink(reddit, subreddit: str, marker: str) -> str | None:
     """Return the permalink of an already-submitted post carrying this item's ref marker in the
     target subreddit, or None — the "check remote before re-post" idempotency guard."""
+    footer = _embedded_marker(marker)
     for submission in reddit.user.me().submissions.new(limit=_RECENT_SUBMISSION_SCAN):
         if (
-            marker in (getattr(submission, "selftext", "") or "")
+            footer in (getattr(submission, "selftext", "") or "")
             and submission.subreddit.display_name.lower() == subreddit.lower()
         ):
             return _permalink_url(submission.permalink)
@@ -71,15 +78,25 @@ def _existing_permalink(reddit, subreddit: str, marker: str) -> str | None:
 
 def _is_transient(exc: Exception) -> bool:
     """Transient (retry) vs permanent (fail) split for Reddit publish errors. Network/`prawcore`
-    connectivity + 5xx + rate-limit are transient; Reddit API validation/auth errors are permanent
-    and must not be retried forever."""
+    connectivity + 5xx + rate-limit are transient; a rate-limit `RedditAPIException` is transient
+    too; other Reddit API validation/auth errors are permanent and must not be retried forever."""
     if isinstance(exc, ConnectionError | TimeoutError):
         return True
     try:
+        from praw.exceptions import RedditAPIException
         from prawcore.exceptions import RequestException, ServerError, TooManyRequests
     except ImportError:  # praw not installed in this env — default to the prior retry behavior
         return True
-    return isinstance(exc, RequestException | ServerError | TooManyRequests)
+    if isinstance(exc, RequestException | ServerError | TooManyRequests):
+        return True
+    if isinstance(exc, RedditAPIException):
+        # PRAW raises RedditAPIException(RATELIMIT) when Reddit's wait exceeds ratelimit_seconds;
+        # that is transient. Validation/auth items are permanent.
+        return any(
+            getattr(err, "error_type", "").upper() == "RATELIMIT"
+            for err in getattr(exc, "items", [])
+        )
+    return False
 
 
 class RedditAdapter:
@@ -92,17 +109,23 @@ class RedditAdapter:
         subreddit, flair_id = _subreddit_and_flair(channel)
         parsed = _parse_creds(creds)
         title = item.title or item.body.splitlines()[0][:300]
-        # idempotency_key is set by the pace pass before an item is ever scheduled; guard anyway.
-        marker = _ref_marker(item.idempotency_key) if item.idempotency_key else None
-        selftext = _body_with_marker(item.body, marker) if marker else item.body
+        # Fail closed: the pace pass always sets idempotency_key before an item is scheduled. A
+        # missing key would silently disable the remote idempotency guard on a non-idempotent
+        # external submit — treat it as a broken upstream contract (permanent).
+        if not item.idempotency_key:
+            raise RuntimeError(
+                f"content_item {item.id} has no idempotency_key; refusing a non-idempotent "
+                "reddit submit"
+            )
+        marker = _ref_marker(item.idempotency_key)
+        selftext = _body_with_marker(item.body, marker)
         try:
             reddit = _build_reddit(parsed)
             # Check remote before re-posting: a prior attempt that submitted but didn't commit its
             # status leaves this item `scheduled`; the marker identifies that exact post.
-            if marker is not None:
-                existing = _existing_permalink(reddit, subreddit, marker)
-                if existing is not None:
-                    return PublishResult(external_url=existing)
+            existing = _existing_permalink(reddit, subreddit, marker)
+            if existing is not None:
+                return PublishResult(external_url=existing)
             submission = reddit.subreddit(subreddit).submit(
                 title=title, selftext=selftext, flair_id=flair_id
             )
