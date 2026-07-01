@@ -16,7 +16,13 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app import worker
 from app.config import settings
 from app.models import JobRun, JobStatus
-from app.scheduler import _crank_tick, _heartbeat, _worker_tick, create_scheduler
+from app.scheduler import (
+    _crank_tick,
+    _heartbeat,
+    _publish_tick,
+    _worker_tick,
+    create_scheduler,
+)
 from app.worker import (
     MAX_ATTEMPTS,
     enqueue,
@@ -168,13 +174,14 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
     # Built but not started — no background thread to tear down.
     scheduler = create_scheduler()
     jobs = {j.id: j for j in scheduler.get_jobs()}
-    assert set(jobs) == {"worker", "heartbeat", "crank"}
+    assert set(jobs) == {"worker", "heartbeat", "crank", "publish"}
 
     # Pin each job's callable + interval, so a mis-wiring (wrong func/interval) fails the test.
     expected = {
         "worker": (_worker_tick, settings.worker_interval_seconds),
         "heartbeat": (_heartbeat, settings.heartbeat_interval_seconds),
         "crank": (_crank_tick, settings.crank_check_interval_seconds),
+        "publish": (_publish_tick, settings.crank_check_interval_seconds),
     }
     for job_id, (func, interval) in expected.items():
         assert jobs[job_id].func is func
