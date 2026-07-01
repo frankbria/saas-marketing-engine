@@ -34,3 +34,27 @@ content_type, so the unsupported-type `LookupError` guard couldn't fire without 
 needs a secret/network, so the guard behaves identically in every environment.
 **How to apply:** order a handler as: validate identity/inputs → check budget/preconditions → only then
 build clients / hit the network. Reproduce key-gated paths locally with `env -u SME_… uv run pytest …`.
+
+## `gh pr checks --watch` can report a stale run — verify against the head SHA before merging.
+In S4.3 a docs-only push triggered a fresh CI run, but `--watch` returned green immediately from the
+*previous* commit's already-finished checks (a race before the new run registered). Merging then would
+have skipped the head commit's checks. Confirm the run you watched belongs to the current head:
+`gh pr view <N> --json headRefOid,mergeStateStatus` — `mergeStateStatus` should be `CLEAN`, not
+`UNSTABLE`/`BLOCKING`, and `gh pr checks <N>` should show no `pending` for the head SHA.
+**How to apply:** after any push, re-check `mergeStateStatus == CLEAN` (or explicitly watch again) before
+`gh pr merge`; treat a lone green `--watch` as necessary-but-not-sufficient.
+
+## `gh pr edit --body` fails on this repo (Projects-classic GraphQL error) — PATCH via REST instead.
+`gh pr edit 58 --body-file …` exits non-zero with "Projects (classic) is being deprecated …
+(repository.pullRequest.projectCards)" because the edit mutation still queries projectCards. Editing a
+PR body/title through `gh pr edit` will keep failing here.
+**How to apply:** update the body with the REST endpoint, which doesn't touch projectCards:
+`gh api repos/<owner>/<repo>/pulls/<N> -X PATCH -F body=@body.md`.
+
+## The generate handler now owns the critic gate (S4.3) — a costly, non-idempotent job.
+`modules/crank/generate.py`'s `run_generate` loops generate→critique up to `1+critic_max_regenerations`,
+so one `generate` job can make several paired opus+haiku calls. Any story that touches this handler
+must keep: the per-attempt budget reservation (`_reserve_one_attempt`), the one-`ContentItem`-per-cell
+invariant (novelty's `_TERMINAL_FAILURE` exclusion depends on it), and the different critic tier
+(`CRITIC_MODEL` haiku ≠ `GEN_MODEL` opus, FR-22). Partial-spend-on-retry is the shared worker limitation
+(no cost ledger) — documented, not fixed per-story.
