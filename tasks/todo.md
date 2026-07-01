@@ -41,7 +41,7 @@ Kill switch (S4.6) only stops *future* posts; retract pulls a bad *live* one.
    stub adapter records the delete; `Retryable` propagates (item stays published).
 7. Add a `RedditAdapter.delete` network-error → `Retryable` test (delete path currently untested).
 8. `backend/tests/test_content_api.py` — GET lists published; POST retract 200; non-published 409;
-   wrong product 404.
+   missing `external_url` 409; wrong product 404; orphaned channel 409; transient adapter failure 503.
 
 ## Quality gate
 - `uv run pytest` (backend) + dashboard `npm test`; ruff/black; `codex review` pre-PR.

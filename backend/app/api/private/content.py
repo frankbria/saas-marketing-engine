@@ -63,3 +63,6 @@ def retract_content(product_id: int, item_id: int, session: SessionDep) -> Conte
     except Retryable as exc:
         # Transient adapter failure — the post is still live. Surface so the operator retries.
         raise HTTPException(status_code=503, detail=f"retract failed transiently: {exc}") from exc
+    except LookupError as exc:
+        # Orphaned channel/product row (no FKs in v1) — a clean 409 beats an opaque 500.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

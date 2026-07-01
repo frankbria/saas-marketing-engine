@@ -124,6 +124,18 @@ def test_retract_wrong_product_404(ctx):
     assert c.post(f"/api/private/content/{pid}/999/retract").status_code == 404
 
 
+def test_retract_orphaned_channel_409(ctx):
+    # No FKs in v1: an item can point at a missing channel. LookupError → 409, not an opaque 500.
+    c, engine = ctx
+    pid, iid = _seed(engine)
+    with Session(engine) as s:
+        it = s.get(ContentItem, iid)
+        it.channel_id = 99999
+        s.add(it)
+        s.commit()
+    assert c.post(f"/api/private/content/{pid}/{iid}/retract").status_code == 409
+
+
 def test_retract_transient_failure_503(ctx, monkeypatch):
     c, engine = ctx
     pid, iid = _seed(engine)

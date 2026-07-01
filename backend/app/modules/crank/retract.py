@@ -42,6 +42,11 @@ def retract_item(session: Session, item: ContentItem, *, adapter_for=get_adapter
     )
     adapter.delete(item.external_url, product, channel, creds)
 
+    # The remote delete is the irreversible side effect; the status flip follows. If this commit
+    # fails, the item stays `published` while the remote post is already gone — but that state is
+    # self-healing: both adapters' delete is idempotent on retry (blog `unlink(missing_ok=True)`,
+    # reddit re-delete), and a `published` item is exactly what the operator retries, so the next
+    # retract lands the status without a second live post. Same at-least-once contract as publish.
     item.status = ContentItemStatus.RETRACTED
     item.error = None
     session.add(item)
