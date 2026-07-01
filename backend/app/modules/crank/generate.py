@@ -87,19 +87,21 @@ def _real_generate(
     content_type: str,
     recent_items: list[str],
 ) -> tuple[Generated, int]:
-    client = build_client()
     pillars = json.loads(brief.content_pillars_json)
 
+    # Validate the content type before building the client: an unknown type is a wiring bug that
+    # must fail the same way with or without an API key (video/podcast are Phase B; the crank
+    # fan-out never emits them in Phase A).
     if content_type == ContentType.SOCIAL.value:
         post, cost = generate_social_post(
-            client, product.name, brand_kit, brief.positioning, pillars, recent_items
+            build_client(), product.name, brand_kit, brief.positioning, pillars, recent_items
         )
         meta = {"pillar": post.pillar, "hashtags": post.hashtags}
         return Generated(body=post.body, meta=meta), cost
 
     if content_type == ContentType.BLOG.value:
         article, cost = generate_blog_article(
-            client, product.name, brand_kit, brief.positioning, pillars, recent_items
+            build_client(), product.name, brand_kit, brief.positioning, pillars, recent_items
         )
         meta = {
             "pillar": article.pillar,
@@ -108,8 +110,6 @@ def _real_generate(
         }
         return Generated(title=article.title, body=article.body, meta=meta), cost
 
-    # video/podcast are Phase B; the crank fan-out never emits them in Phase A, so reaching here is
-    # a wiring bug — fail unrecoverably rather than silently produce nothing.
     raise LookupError(f"no generator for content_type {content_type!r} (Phase A is social|blog)")
 
 
