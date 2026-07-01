@@ -7,7 +7,9 @@ import {
   getSetupChecklist,
   getStrategy,
   listChannels,
+  listPublishedContent,
   type Channel,
+  type ContentItem,
   type Product,
   type QaChecklistItem,
   type SetupChecklistItem,
@@ -16,6 +18,7 @@ import {
 
 import { ChannelSetup } from "./channel-setup"
 import { LaunchChecklist } from "./launch-checklist"
+import { PublishedContent } from "./published-content"
 import { QaChecklist } from "./qa-checklist"
 import { SmokeTest } from "./smoke-test"
 import { StrategyReview } from "./strategy-review"
@@ -67,6 +70,14 @@ export default async function ProductDetailPage({
     qaItems = []
   }
 
+  // Published/retracted items exist once the crank has published (S4.5); empty until then.
+  let publishedItems: ContentItem[] = []
+  try {
+    publishedItems = await listPublishedContent(productId)
+  } catch {
+    publishedItems = []
+  }
+
   return (
     <div className="mx-auto flex min-h-svh w-full max-w-3xl flex-col gap-6 p-6">
       <div className="flex items-center justify-between">
@@ -114,6 +125,8 @@ export default async function ProductDetailPage({
         lifecycleState={product.lifecycle_state}
         items={qaItems}
       />
+
+      <PublishedContent productId={productId} items={publishedItems} />
     </div>
   )
 }
