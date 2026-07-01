@@ -5,6 +5,7 @@ import {
   getProduct,
   getQaChecklist,
   getSetupChecklist,
+  getSpotCheckQueue,
   getStrategy,
   listChannels,
   listPublishedContent,
@@ -21,6 +22,7 @@ import { LaunchChecklist } from "./launch-checklist"
 import { PublishedContent } from "./published-content"
 import { QaChecklist } from "./qa-checklist"
 import { SmokeTest } from "./smoke-test"
+import { SpotCheckQueue } from "./spot-check-queue"
 import { StrategyReview } from "./strategy-review"
 
 export const dynamic = "force-dynamic"
@@ -78,6 +80,14 @@ export default async function ProductDetailPage({
     publishedItems = []
   }
 
+  // Spot-check queue (S4.9): items flagged for async review; empty until the crank has generated any.
+  let spotCheckItems: ContentItem[] = []
+  try {
+    spotCheckItems = await getSpotCheckQueue(productId)
+  } catch {
+    spotCheckItems = []
+  }
+
   return (
     <div className="mx-auto flex min-h-svh w-full max-w-3xl flex-col gap-6 p-6">
       <div className="flex items-center justify-between">
@@ -127,6 +137,8 @@ export default async function ProductDetailPage({
       />
 
       <PublishedContent productId={productId} items={publishedItems} />
+
+      <SpotCheckQueue items={spotCheckItems} />
     </div>
   )
 }

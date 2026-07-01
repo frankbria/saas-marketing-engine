@@ -43,6 +43,18 @@ def list_content(product_id: int, session: SessionDep) -> list[ContentItem]:
     ).all()
 
 
+@router.get("/{product_id}/spot-check")
+def spot_check_queue(product_id: int, session: SessionDep) -> list[ContentItem]:
+    """S4.9 review queue: items flagged `spot_check=true` for async human review (newest first).
+    Reviewing is optional/async — the queue never gates publishing."""
+    _require_product(session, product_id)
+    return session.exec(
+        select(ContentItem)
+        .where(ContentItem.product_id == product_id, ContentItem.spot_check)
+        .order_by(col(ContentItem.id).desc())
+    ).all()
+
+
 @router.post("/{product_id}/{item_id}/retract")
 def retract_content(product_id: int, item_id: int, session: SessionDep) -> ContentItem:
     """Retract a published item: delete the remote post + mark `retracted`."""

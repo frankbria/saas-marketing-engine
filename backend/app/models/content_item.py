@@ -62,6 +62,9 @@ class ContentItem(SQLModel, table=True):
     # Pipeline-state seams (nullable) filled by S4.3–S4.7 — see module docstring.
     critic_score: float | None = None
     critic_notes: str | None = None
+    # S4.9: flagged for async human review (first item per channel + a random 10%). An annotation
+    # set once at creation, orthogonal to `status` — it never gates publishing.
+    spot_check: bool = Field(default=False, index=True)
     # Unique publish key (S4.5): enforce uniqueness now so the S4.5 dedup doesn't need the SQLite
     # ALTER this seam-preseeding is meant to avoid. All S4.2 rows leave it NULL (SQLite permits
     # multiple NULLs under a UNIQUE constraint), so the constraint is inert until publish sets it.
