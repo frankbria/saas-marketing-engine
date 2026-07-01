@@ -259,6 +259,24 @@ export const setChecklistItemStatus = (
     body: JSON.stringify({ status }),
   })
 
+// S4.8.2: seed an owned-token provider's OAuth-app client credentials (stored encrypted, channel-
+// scoped). Returns nothing (204); the authorize redirect below reads these.
+export const seedClientCredentials = (
+  productId: number,
+  channelId: number,
+  clientId: string,
+  clientSecret: string
+) =>
+  apiFetch<void>(`/channels/${productId}/${channelId}/credentials`, {
+    method: "POST",
+    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+  })
+
+// S4.8.2: the backend authorize endpoint. A browser *redirect*, not an apiFetch call — the caller
+// does a full-page navigation so the provider's consent screen (and its callback) own the tab.
+export const authorizeUrl = (productId: number, channelId: number) =>
+  `${API_BASE}/api/private/channels/${productId}/${channelId}/authorize`
+
 // S4.6: per-channel kill switch. Flips `channel.paused`; the engine re-checks it immediately
 // before every publish, so pausing halts new posts within a cycle and resuming restores the schedule.
 export const setChannelPaused = (

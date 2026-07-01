@@ -1,5 +1,32 @@
 # Lessons
 
+## OAuth acquisition (authorize→callback) has five review-magnet failure modes (S4.8.2).
+Both codex and CodeRabbit converged on the same classes of issue for the redirect-based OAuth flow —
+worth pre-empting next time:
+- **Dead UI for a not-yet-enabled backend feature.** The dashboard showed the seed/Connect controls
+  for every non-Reddit channel, but v1 registers no live provider, so the backend 400s them. Gate
+  forward-looking UI behind a capability check (`REDIRECT_OAUTH_TYPES`) that mirrors the backend
+  registry — don't render a control the server will reject.
+- **Vault commits per write → callback isn't atomic.** `put_credential` commits each secret, so a
+  crash between the access-token and refresh-token writes leaves a half-applied connect. Add a
+  `commit=False` path and flush all writes + the state change in one transaction.
+- **Deriving a dict from a registry at import drifts.** `TOKEN_ENDPOINTS = {t: p.token_url ...}`
+  snapshotted an empty registry; a provider added later was invisible to refresh. Read the source
+  live via a function (`token_endpoint()`), keep the dict only as an override seam.
+- **Plaintext redirect origins.** Add a fail-closed config validator: `oauth_redirect_base_url` may
+  be http only for localhost; else require https (OAuth code/state otherwise cross the wire in clear).
+- **Check ALL preconditions before the redirect.** `/authorize` validated only `client_id`, but
+  `/callback` needs the secret too — validate both before spending the one-time consent code.
+**How to apply:** for any redirect/exchange flow, verify (a) every credential exists before the
+redirect, (b) the token-persist + state-flip is one transaction, (c) provider failures map to a
+controlled 4xx/5xx without leaking detail, (d) config that carries secrets fails closed on http.
+
+## No-leak log tests must scope to *our* loggers.
+The "secrets never logged" test failed on `AUTHCODE-123` — leaked by httpx's TestClient request log
+(it logs the URL with query string), not our code. Filter `caplog.records` to `rec.name.startswith
+("app")` so the test asserts *our* logging, not the harness's. (Prod access-log hygiene is deploy
+config, a separate concern.)
+
 ## Deterministic number-matching needs BOTH type- and format-scoping (S4.4 guard).
 S4.4's claim-trace checks that a claimed number appears in the fact corpus. Two bugs, each caught by a
 different review bot, not by my first tests:

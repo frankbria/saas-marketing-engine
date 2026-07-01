@@ -2,6 +2,7 @@
 
 import re
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -98,6 +99,30 @@ class Settings(BaseSettings):
     # are deployed (on the VPS this is nginx's web root; a vhost per marketing_domain is emitted).
     public_api_base_url: str = "http://localhost:8010"
     nginx_sites_root: str = "./deploy/sites"
+
+    # S4.8.2 per-provider OAuth redirect flow. `oauth_redirect_base_url` is the *backend* origin the
+    # provider redirects the operator's browser back to — the callback path is appended to build the
+    # `redirect_uri` sent at authorize time (must match the value registered in the OAuth app).
+    # `dashboard_base_url` is where the callback then bounces the browser once tokens are stored.
+    # Plain str (non-sensitive); localhost dev defaults matching the v1 ports above.
+    oauth_redirect_base_url: str = "http://localhost:8010"
+    dashboard_base_url: str = "http://localhost:3010"
+
+    @field_validator("oauth_redirect_base_url")
+    @classmethod
+    def _require_https_off_localhost(cls, v: str) -> str:
+        # OAuth `code`/`state` ride this origin's callback; a non-https scheme off localhost would
+        # expose them on the wire. Loopback (dev) may use http; every other host must be https —
+        # fail loud at startup rather than silently shipping an insecure redirect. Requiring https
+        # (not just rejecting `http://`) also closes uppercase/other-scheme/scheme-less bypasses.
+        parts = urlsplit(v)
+        is_loopback = (parts.hostname or "") in ("localhost", "127.0.0.1", "::1")
+        if not is_loopback and parts.scheme.lower() != "https":
+            raise ValueError(
+                f"oauth_redirect_base_url must use https off localhost (got {v!r}) — OAuth "
+                "code/state would otherwise cross the network in plaintext"
+            )
+        return v
 
     @field_validator("cors_origins", mode="before")
     @classmethod

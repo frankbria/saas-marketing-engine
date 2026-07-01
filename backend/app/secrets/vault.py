@@ -64,8 +64,14 @@ def put_credential(
     *,
     channel_id: int | None = None,
     expires_at: datetime | None = None,
+    commit: bool = True,
 ) -> Credential:
-    """Encrypt and persist a secret. Only ciphertext hits the DB."""
+    """Encrypt and persist a secret. Only ciphertext hits the DB.
+
+    `commit=False` stages the row without committing, so a caller writing several credentials plus a
+    state change can flush them in one transaction (all-or-nothing) — used by the OAuth callback to
+    avoid a half-applied connect if a later write fails.
+    """
     cred = Credential(
         product_id=product_id,
         channel_id=channel_id,
@@ -74,8 +80,9 @@ def put_credential(
         expires_at=expires_at,
     )
     session.add(cred)
-    session.commit()
-    session.refresh(cred)
+    if commit:
+        session.commit()
+        session.refresh(cred)
     return cred
 
 

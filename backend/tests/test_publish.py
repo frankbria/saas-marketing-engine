@@ -876,3 +876,38 @@ def test_refresh_channel_token_persists_rotated_refresh_token(session, monkeypat
     assert (
         vault.get_credential(session, p.id, "reddit_oauth_refresh", channel_id=c.id) == "rtok-new"
     )
+
+
+def test_registered_provider_grant_failure_fences_channel(session, monkeypatch, caplog):
+    # S4.8.2 AC: for a *registered* owned-token provider (endpoint in TOKEN_ENDPOINTS), a real grant
+    # failure at the network seam must fire the S4.8 fail-safe end-to-end — the channel is fenced
+    # (connect_state=FAILED) and `oauth_refresh_failed` alerted — not just when refresh is stubbed.
+    from app.modules.crank import oauth_refresh
+
+    p = _product(session)
+    c = _oauth_channel(session, p.id, expires_at=NOW + timedelta(seconds=30))
+    it = _scheduled_item(session, p, c)
+    vault.put_credential(session, p.id, "reddit_oauth_refresh", "rtok", channel_id=c.id)
+    vault.put_credential(session, p.id, "reddit_client_id", "cid", channel_id=c.id)
+    vault.put_credential(session, p.id, "reddit_client_secret", "csec", channel_id=c.id)
+    monkeypatch.setitem(oauth_refresh.TOKEN_ENDPOINTS, ChannelType.REDDIT, "https://ex/token")
+
+    def dead_grant(*a):
+        raise RuntimeError("invalid_grant")
+
+    monkeypatch.setattr(oauth_refresh, "_post_token_refresh", dead_grant)
+
+    stub = StubAdapter(credential_key="reddit_oauth")
+    with caplog.at_level("WARNING"):
+        # default refresh=refresh_channel_token — the real grant path, not an injected stub
+        published = publish_scheduled(session, NOW, adapter_for=lambda t: stub)
+
+    assert published == []
+    assert stub.calls == []
+    session.refresh(c)
+    assert c.connect_state == ConnectState.FAILED
+    session.refresh(it)
+    assert it.status == ContentItemStatus.SCHEDULED  # halted, resumes on reconnect
+    assert any("oauth_refresh_failed" in r.getMessage() for r in caplog.records)
+    # the fail-safe alert must not leak the seeded refresh token / client secret into the log
+    assert not any("rtok" in r.getMessage() or "csec" in r.getMessage() for r in caplog.records)
