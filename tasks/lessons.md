@@ -72,3 +72,25 @@ must keep: the per-attempt budget reservation (`_reserve_one_attempt`), the one-
 invariant (novelty's `_TERMINAL_FAILURE` exclusion depends on it), and the different critic tier
 (`CRITIC_MODEL` haiku ≠ `GEN_MODEL` opus, FR-22). Partial-spend-on-retry is the shared worker limitation
 (no cost ledger) — documented, not fixed per-story.
+
+## Publish adapters (S4.5): idempotency + transient/permanent errors on external side-effects.
+`app/channels/` adapters (`BlogAdapter`, `RedditAdapter`) publish a vetted `content_item` and must be
+idempotent + retry-safe. Patterns the cross-family + CodeRabbit reviews enforced (apply to any future
+adapter, e.g. X/IG/YouTube in Phase B):
+- **Idempotency keyed on `idempotency_key`, not incidental fields.** Reddit has no native idempotency
+  key, so each post embeds a `^(sme-ref:<idempotency_key>)` footer and the pre-submit remote scan
+  matches the **full self-delimiting footer** — a bare-substring match on `sme-ref:reddit:7` collides
+  with `...:70`, and a title-based match collides across two items that share a headline. Blog is
+  idempotent by construction (write to `<slug>-<item.id>.html` atomically via temp file + `os.replace`;
+  slug alone collides across items).
+- **Split transient vs permanent errors.** Retry only network/`prawcore` (RequestException/ServerError/
+  TooManyRequests) + a `RedditAPIException` whose items include `RATELIMIT`; let validation/auth errors
+  surface so `publish_scheduled` records `publish_failed` instead of retrying a doomed post forever. A
+  blanket `except Exception → Retryable` is an infinite-retry bug.
+- **Re-check kill-switch state at publish time**, not just when pacing schedules the item — `paused`,
+  `enabled`, AND `autonomous` can all flip after scheduling; `publish_scheduled` re-checks all three.
+- **Fail closed on a missing required key.** No `idempotency_key` ⇒ raise (permanent), don't silently
+  publish without the idempotency guard.
+**How to apply:** publish path = validate inputs/key (fail-closed, permanent) → check remote by the
+durable key → submit → classify errors transient-vs-permanent. Inject the network client (like
+`generate=`/`critique=`) so the worker path is testable without a real account.
