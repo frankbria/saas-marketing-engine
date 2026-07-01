@@ -119,6 +119,25 @@ export interface QaChecklistItem {
   updated_at: string
 }
 
+// S4.2/S4.7: a generated piece of content. The dashboard only surfaces published/retracted ones
+// (for the retract action); the full pipeline status set lives on the backend enum.
+export type ContentItemStatus =
+  | "generated" | "critic_passed" | "critic_failed" | "guard_failed"
+  | "scheduled" | "published" | "publish_failed" | "retracted"
+
+export interface ContentItem {
+  id: number
+  product_id: number
+  channel_id: number
+  content_type: string
+  status: ContentItemStatus
+  title: string | null
+  body: string
+  external_url: string | null
+  published_at: string | null
+  created_at: string
+}
+
 export interface ConnectRequest {
   access_token: string
   refresh_token?: string
@@ -238,6 +257,16 @@ export const setChannelPaused = (
   apiFetch<Channel>(`/channels/${productId}/${channelId}/pause`, {
     method: "PATCH",
     body: JSON.stringify({ paused }),
+  })
+
+// S4.7: published/retracted items for the retract list (newest first).
+export const listPublishedContent = (productId: number) =>
+  apiFetch<ContentItem[]>(`/content/${productId}`)
+
+// S4.7: retract a published item — deletes the remote post and flips status to `retracted`.
+export const retractContent = (productId: number, itemId: number) =>
+  apiFetch<ContentItem>(`/content/${productId}/${itemId}/retract`, {
+    method: "POST",
   })
 
 // S2.7: run the pre-QA funnel smoke test. Records the verdict; a pass clears the smoke gate but the

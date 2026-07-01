@@ -5,7 +5,7 @@ Routers for products/strategy/setup/qa/crank/metrics are added in later phases.
 
 from fastapi import APIRouter
 
-from app.api.private import channels, products, qa, setup, strategy
+from app.api.private import channels, content, products, qa, setup, strategy
 
 router = APIRouter()
 
@@ -19,4 +19,5 @@ router.include_router(products.router)
 router.include_router(strategy.router)
 router.include_router(setup.router)
 router.include_router(channels.router)
+router.include_router(content.router)
 router.include_router(qa.router)

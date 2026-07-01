@@ -9,6 +9,8 @@ import {
   getStrategy,
   goLive,
   listChannels,
+  listPublishedContent,
+  retractContent,
   runSmokeTest,
   setChannelPaused,
   setChecklistItemStatus,
@@ -139,6 +141,22 @@ describe("per-channel kill switch (S4.6)", () => {
     expect(url).toContain("/api/private/channels/7/3/pause")
     expect(init?.method).toBe("PATCH")
     expect(init?.body).toBe(JSON.stringify({ paused: true }))
+  })
+})
+
+describe("retract published content (S4.7)", () => {
+  it("listPublishedContent GETs the content endpoint", async () => {
+    const fetchMock = mockFetch([])
+    await listPublishedContent(7)
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/private/content/7")
+  })
+
+  it("retractContent POSTs the retract endpoint", async () => {
+    const fetchMock = mockFetch({ id: 3, status: "retracted" })
+    await retractContent(7, 3)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/content/7/3/retract")
+    expect(init?.method).toBe("POST")
   })
 })
 

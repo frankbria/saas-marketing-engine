@@ -107,3 +107,22 @@ adapter, e.g. X/IG/YouTube in Phase B):
 **How to apply:** publish path = validate inputs/key (fail-closed, permanent) → check remote by the
 durable key → submit → classify errors transient-vs-permanent. Inject the network client (like
 `generate=`/`critique=`) so the worker path is testable without a real account.
+
+## Retract / any irreversible side-effect action (S4.7): guard nullable handles + order side-effect before the DB flip.
+S4.7's `retract_item` calls `adapter.delete(external_url)` then flips `status = retracted`. Two review
+catches (codex + CodeRabbit), both on the same theme — an already-executed external effect can't be undone:
+- **Guard the nullable handle at the boundary.** `external_url` is a nullable column; a `published`
+  row with `external_url = NULL` (broken invariant) would pass the status check, `delete("")` as a blog
+  no-op, and get marked `retracted` while the live post stays up. Fail closed (409 + `ValueError`) when
+  the delete handle is missing rather than substituting `""`.
+- **Order the irreversible side-effect first, then rely on idempotent retry — don't add 2-phase machinery.**
+  `delete()` runs before `commit()`; if the commit fails the item stays `published` while the remote is
+  gone, but that self-heals because both adapters' delete is idempotent on retry and a `published` item is
+  what the operator retries. Same at-least-once contract as `publish_scheduled`. Documented in a comment;
+  a reconciliation/2-phase layer for a single-row status update is over-engineering.
+- **Map engine exceptions to clean HTTP.** `LookupError` (orphaned channel/product, no FKs in v1) → 409,
+  not an opaque 500; `Retryable` → 503 (post still live, retry).
+**How to apply:** for any operator action that deletes/publishes/charges externally: validate the handle
+before the call (fail-closed on NULL), do the irreversible effect *before* the DB status flip, keep the
+adapter delete idempotent so a failed commit is a safe retry, and translate each engine error to a
+distinct status code so the dashboard shows why.
