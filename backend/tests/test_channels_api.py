@@ -189,3 +189,28 @@ def test_toggle_missing_item_404(ctx):
         c.patch(f"/api/private/channels/{pid}/checklist/999", json={"status": "done"}).status_code
         == 404
     )
+
+
+# ---- pause / resume kill switch (S4.6) --------------------------------------------------
+
+
+def test_pause_and_resume_channel(ctx):
+    c, engine = ctx
+    pid = _seed_product(engine)
+    cid = _seed_channel(engine, pid)
+
+    resp = c.patch(f"/api/private/channels/{pid}/{cid}/pause", json={"paused": True})
+    assert resp.status_code == 200
+    assert resp.json()["paused"] is True
+
+    resp = c.patch(f"/api/private/channels/{pid}/{cid}/pause", json={"paused": False})
+    assert resp.status_code == 200
+    assert resp.json()["paused"] is False
+
+
+def test_pause_wrong_channel_404(ctx):
+    c, engine = ctx
+    pid = _seed_product(engine)
+    assert (
+        c.patch(f"/api/private/channels/{pid}/999/pause", json={"paused": True}).status_code == 404
+    )

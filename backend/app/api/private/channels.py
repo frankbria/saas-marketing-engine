@@ -47,6 +47,10 @@ class ChecklistUpdate(BaseModel):
     status: SetupItemStatus
 
 
+class PauseRequest(BaseModel):
+    paused: bool
+
+
 def _require_product(session: Session, product_id: int) -> Product:
     product = session.get(Product, product_id)
     if product is None:
@@ -122,6 +126,25 @@ def connect_channel(
     channel.connect_state = ConnectState.CONNECTED
     if payload.account_ref:
         channel.account_ref = payload.account_ref
+    channel.updated_at = datetime.now(UTC)
+    session.add(channel)
+    session.commit()
+    session.refresh(channel)
+    return channel
+
+
+@router.patch("/{product_id}/{channel_id}/pause")
+def set_channel_paused(
+    product_id: int, channel_id: int, payload: PauseRequest, session: SessionDep
+) -> Channel:
+    """Flip the per-channel kill switch (S4.6). `publish_scheduled` re-checks `paused` immediately
+    before every publish, so pausing halts new posts within one tick and resuming restores the
+    schedule (items stay `scheduled`, nothing is lost)."""
+    _require_product(session, product_id)
+    channel = session.get(Channel, channel_id)
+    if channel is None or channel.product_id != product_id:
+        raise HTTPException(status_code=404, detail="channel not found for this product")
+    channel.paused = payload.paused
     channel.updated_at = datetime.now(UTC)
     session.add(channel)
     session.commit()

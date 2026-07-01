@@ -10,6 +10,7 @@ import {
   goLive,
   listChannels,
   runSmokeTest,
+  setChannelPaused,
   setChecklistItemStatus,
   setQaItemStatus,
   triggerChannelSetup,
@@ -127,6 +128,17 @@ describe("channels + setup checklist (S2.6)", () => {
     expect(url).toContain("/api/private/channels/7/checklist/9")
     expect(init?.method).toBe("PATCH")
     expect(init?.body).toBe(JSON.stringify({ status: "done" }))
+  })
+})
+
+describe("per-channel kill switch (S4.6)", () => {
+  it("setChannelPaused PATCHes the pause endpoint with the flag", async () => {
+    const fetchMock = mockFetch({ id: 3, paused: true })
+    await setChannelPaused(7, 3, true)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/channels/7/3/pause")
+    expect(init?.method).toBe("PATCH")
+    expect(init?.body).toBe(JSON.stringify({ paused: true }))
   })
 })
 

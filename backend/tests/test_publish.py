@@ -302,6 +302,30 @@ def test_publish_paused_channel_kill_switch(session):
     assert it.status == ContentItemStatus.SCHEDULED
 
 
+def test_publish_pause_halts_then_resume_restores(session):
+    # AC #2 as one flow: a due item is halted while the channel is paused, then publishes once
+    # resumed — no rescheduling needed, the item just waits at `scheduled`.
+    p = _product(session)
+    c = _channel(session, p.id)
+    it = _scheduled_item(session, p, c)
+    stub = StubAdapter()
+
+    c.paused = True
+    session.add(c)
+    session.commit()
+    assert publish_scheduled(session, NOW, adapter_for=lambda t: stub) == []
+    session.refresh(it)
+    assert it.status == ContentItemStatus.SCHEDULED  # halted while paused, still due
+
+    c.paused = False
+    session.add(c)
+    session.commit()
+    published = publish_scheduled(session, NOW, adapter_for=lambda t: stub)
+    assert [i.id for i in published] == [it.id]  # resume restores the schedule
+    session.refresh(it)
+    assert it.status == ContentItemStatus.PUBLISHED
+
+
 def test_publish_autonomy_off_after_scheduling_halts_publish(session):
     # pace_content only schedules autonomous channels, but publish must re-check: turning autonomy
     # off after an item is scheduled halts the publish (item stays scheduled).
