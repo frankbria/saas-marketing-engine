@@ -68,9 +68,21 @@ Unattributed visits/signups/paid roll into a row with `channel_id: null, content
 
 ## Acceptance criteria
 
-- [ ] Per-product funnel: impressions → visits → signups → paid → revenue
-- [ ] Each conversion joinable to the channel/content item that drove it (attribution)
-- [ ] (Portfolio roll-up deferred until >1 product — nothing to build)
+- [x] Per-product funnel: impressions → visits → signups → paid → revenue — demoed live
+  (seed → visit → lead → signed webhook → `GET /metrics/1/funnel` returned all stages +
+  revenue_cents 4900; dashboard section rendered the same data)
+- [x] Each conversion joinable to the channel/content item that drove it — demoed live
+  (threaded UTM link → funnel events carried `utm_content=sme-1` → paid row attributed to
+  the reddit channel + content item in the rollup)
+- [x] Portfolio roll-up deferred until >1 product — verified by absence (per-product
+  endpoint only)
+
+## Post-review hardening
+
+- Cross-family (codex) P2: funnel row hydration now re-checks `product_id` ownership on
+  channel/content lookups (no FK backs those ids) — fixed + regression test (`bf508db`).
+- Internal review + deslop scan: clean, no findings above threshold.
+- PR: https://github.com/frankbria/saas-marketing-engine/pull/69
 
 ## Test strategy
 

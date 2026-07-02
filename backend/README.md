@@ -165,6 +165,25 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   spots. Token caps: `GEN_SOCIAL_MAX_TOKENS=1000`, `GEN_BLOG_MAX_TOKENS=4000`,
   `CRITIC_MAX_TOKENS=600`.
 
+### Attributed funnel + revenue rollup (S6.1)
+
+- `modules/metrics/utm.py` — `thread_utm_links` rewrites marketing-domain links in a published
+  item's body to carry `utm_source=<channel type>`, `utm_medium=<content_type>`,
+  `utm_campaign=<product slug>`, `utm_content=sme-<content_item_id>` (called from
+  `modules/crank/publish.py` right before `adapter.publish`); `resolve_attribution` is the one
+  join — shared by the Stripe webhook and the rollup below — that turns a funnel event's UTM
+  fields back into `(channel_id, content_item_id)`.
+- `api/public/stripe.py` — the S2.5 webhook join now also calls `resolve_attribution` off the
+  matched lead's UTM fields, so a `paid` `metric_event` carries `channel_id`/`content_item_id`
+  whenever the lead resolved (not just `product_id`).
+- `modules/metrics/funnel.py` + `api/private/metrics.py` — `GET
+  /api/private/metrics/{product_id}/funnel` (404 unknown product) returns stage totals
+  (`impressions`/`visits`/`signups`/`paid`) + `revenue_cents` plus per-`(channel, content_item)`
+  attribution rows, sorted by revenue then impressions; unattributed events roll into one
+  trailing row. Portfolio (multi-product) roll-up is deferred (TECH_SPEC §14).
+- `dashboard/app/products/[id]/funnel.tsx` — renders the rollup as the product page's **Funnel**
+  section.
+
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
 No Celery/Redis/Postgres in v1 (Phase B).
