@@ -67,13 +67,15 @@ def funnel_rollup(session: Session, product: Product) -> dict:
             "external_url": None,
             **values,
         }
+        # Ownership re-check on hydration: metric_event's channel/content ids have no FK, so a
+        # malformed/backfilled row could point at another product — never expose its metadata here.
         if channel_id is not None:
             channel = session.get(Channel, channel_id)
-            if channel is not None:
+            if channel is not None and channel.product_id == product.id:
                 row["channel_type"] = channel.type.value
         if content_item_id is not None:
             content_item = session.get(ContentItem, content_item_id)
-            if content_item is not None:
+            if content_item is not None and content_item.product_id == product.id:
                 row["title"] = content_item.title
                 row["external_url"] = content_item.external_url
 

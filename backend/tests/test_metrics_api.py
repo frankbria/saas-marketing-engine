@@ -234,3 +234,50 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert row_unattributed["visits"] == 1
     assert row_unattributed["paid"] == 1
     assert row_unattributed["revenue_cents"] == 1000
+
+
+def test_funnel_never_hydrates_other_products_metadata(ctx):
+    """metric_event's channel/content ids have no FK — a malformed row pointing at another
+    product's channel/content must not leak that product's metadata through hydration."""
+    c, engine = ctx
+    pid = _make_product(engine)
+    other_pid = _make_product(engine, slug="other")
+
+    with Session(engine) as s:
+        other_channel = Channel(
+            product_id=other_pid, type=ChannelType.REDDIT, enabled=True, autonomous=True
+        )
+        s.add(other_channel)
+        s.commit()
+        s.refresh(other_channel)
+        other_item = ContentItem(
+            product_id=other_pid,
+            channel_id=other_channel.id,
+            content_type="social",
+            title="Other Product Secret",
+            body="body",
+            external_url="https://other.example/secret",
+        )
+        s.add(other_item)
+        s.commit()
+        s.refresh(other_item)
+        # malformed: belongs to `pid` but points at the other product's channel/item
+        s.add(
+            MetricEvent(
+                product_id=pid,
+                channel_id=other_channel.id,
+                content_item_id=other_item.id,
+                stage=MetricStage.IMPRESSION,
+                value=1,
+            )
+        )
+        s.commit()
+
+    body = c.get(f"/api/private/metrics/{pid}/funnel").json()
+
+    assert len(body["rows"]) == 1
+    row = body["rows"][0]
+    assert row["impressions"] == 1
+    assert row["channel_type"] is None
+    assert row["title"] is None
+    assert row["external_url"] is None
