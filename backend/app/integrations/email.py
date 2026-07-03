@@ -16,6 +16,7 @@ from email.message import EmailMessage
 
 from app.config import settings
 from app.models.product import Product
+from app.secrets.vault import redact
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,9 @@ def send_alert_email(to: str, kind: str, message: str) -> None:
         msg["From"] = settings.smtp_from or settings.smtp_user or "no-reply@localhost"
         msg["To"] = to
         msg["Subject"] = f"[SME alert] {kind}"
-        msg.set_content(f"{message}\n")
+        # The vault's log-record redaction can't see email bodies — alert context can carry raw
+        # provider error strings (e.g. OAuth refresh failures), so scrub here at the boundary.
+        msg.set_content(f"{redact(message)}\n")
         _smtp_send(msg)
     except Exception:
         logger.exception("alert email (%s) failed", kind)
@@ -110,7 +113,8 @@ def send_digest(to: str, product: Product, digest: dict, alerts: list[dict]) -> 
         msg["From"] = settings.smtp_from or settings.smtp_user or "no-reply@localhost"
         msg["To"] = to
         msg["Subject"] = f"[SME heartbeat] {product.name}: {len(alerts)} alert(s)"
-        msg.set_content(_digest_body(digest, alerts))
+        # Defense in depth: alert messages fold into the digest body too — scrub at the boundary.
+        msg.set_content(redact(_digest_body(digest, alerts)))
         _smtp_send(msg)
     except Exception:
         logger.exception("digest email for product %s failed", product.id)

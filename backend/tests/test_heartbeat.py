@@ -410,6 +410,29 @@ def test_raise_alert_emails_when_configured(monkeypatch):
     assert "product_id=1" in sent[0].get_content()
 
 
+def test_alert_email_redacts_registered_secrets(monkeypatch):
+    """Alert emails bypass the log-record redactor — the boundary redact() must scrub instead.
+    Regression: OAuth-refresh alert context carries raw provider error strings (publish.py's
+    _fence_channel passes error=...) which can embed token material."""
+    from app import config
+    from app.integrations import email as email_mod
+    from app.modules.alerts import raise_alert
+    from app.secrets.vault import register_secret
+
+    monkeypatch.setattr(config.settings, "alert_email_to", "ops@example.com")
+    monkeypatch.setattr(config.settings, "smtp_host", "smtp.example.com")
+    monkeypatch.setattr(email_mod.smtplib, "SMTP", _FakeSMTP)
+
+    register_secret("tok-supersecret-123")
+    raise_alert("oauth_refresh_failed", "refresh blew up", error="401: tok-supersecret-123")
+
+    sent = _FakeSMTP.instances[0].sent
+    assert len(sent) == 1
+    body = sent[0].get_content()
+    assert "tok-supersecret-123" not in body
+    assert "401" in body  # the useful part of the error survives
+
+
 def test_run_heartbeat_sends_digest_email_when_configured(engine, monkeypatch):
     from app import config
     from app.integrations import email as email_mod

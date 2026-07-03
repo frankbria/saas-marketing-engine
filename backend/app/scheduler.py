@@ -35,10 +35,15 @@ def _crank_tick() -> None:
 
 
 def _heartbeat_digest_tick() -> None:
-    # S6.2 daily digest + alerts (§8.4). Cron (not interval) so a process restart doesn't reset
-    # the cadence; run_heartbeat is idempotent per UTC day, so a re-fire is a no-op.
+    # S6.2 daily digest + alerts (§8.4). Polled hourly with an hour-of-day guard instead of a
+    # cron trigger: a process that was down at the digest hour still catches up on its next tick
+    # (the watchdog must not silently skip a day), and run_heartbeat's per-UTC-day idempotency
+    # makes every extra tick a no-op.
+    now = datetime.now(UTC)
+    if now.hour < settings.heartbeat_digest_hour_utc:
+        return
     with Session(engine) as session:
-        run_heartbeat(session, datetime.now(UTC))
+        run_heartbeat(session, now)
 
 
 def _publish_tick() -> None:
@@ -67,9 +72,8 @@ def create_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         _heartbeat_digest_tick,
-        "cron",
-        hour=settings.heartbeat_digest_hour_utc,
-        timezone="UTC",
+        "interval",
+        seconds=settings.heartbeat_digest_check_interval_seconds,
         id="heartbeat_digest",
     )
     return scheduler

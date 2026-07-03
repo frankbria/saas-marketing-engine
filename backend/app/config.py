@@ -66,10 +66,12 @@ class Settings(BaseSettings):
     # Independent of the LLM critic — a non-LLM safety net (§8.2/FR-23).
     guard_blocklist: Annotated[list[str], NoDecode] = list(_DEFAULT_GUARD_BLOCKLIST)
 
-    # S6.2 heartbeat digest + alerts (§8.4/FR-31). The daily digest job runs at this UTC hour
-    # (cron, not interval — an interval would reset on every process restart). Bounded like the
-    # critic settings so a bad deploy value fails at startup, not silently at 3am.
+    # S6.2 heartbeat digest + alerts (§8.4/FR-31). The daily digest runs at the first tick at or
+    # after this UTC hour — the tick polls hourly so a process that was down at the digest hour
+    # catches up instead of silently skipping a day (the watchdog must not need a watchdog).
+    # Bounded like the critic settings so a bad deploy value fails at startup, not silently at 3am.
     heartbeat_digest_hour_utc: int = Field(default=6, ge=0, le=23)
+    heartbeat_digest_check_interval_seconds: int = 3600
     # "Repeated publish-fail" alert: fires while >= this many items sit in `publish_failed` on one
     # channel. A stock, not a 24h flow — content_item has no failed_at, and re-surfacing daily
     # until resolved is the operator-useful behavior anyway (matches the dead-token alert).
