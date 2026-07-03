@@ -4,7 +4,7 @@ import re
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # S4.4 deterministic guard: default blocklist (case-insensitive regex). Absolute guarantees and
@@ -83,6 +83,43 @@ class Settings(BaseSettings):
     # Operator address for alert + digest emails. Unset ⇒ delivery stays log-only (raise_alert's
     # v1 behavior); requires smtp_host too, same degrade-gracefully contract as the welcome email.
     alert_email_to: str | None = None
+
+    # S5.0 Phase B: Celery broker (Redis on the VPS). Only the dedicated `media` queue rides
+    # Celery for now — the text/blog crank stays on the in-process loop (issue #28 non-goals).
+    celery_broker_url: str = "redis://localhost:6379/0"
+
+    # S5.0 ephemeral rented GPU worker (issue #28 / TECH_SPEC Phase B decision 2026-07-03).
+    # The provisioner boots one provider pod when `media` jobs are pending and tears it down
+    # when the queue goes idle — cost tracks job minutes, no idle spend.
+    gpu_provider: str = "runpod"
+    # Provider API key — env `SME_GPU_API_KEY`, never stored in the DB (§9). SecretStr so it
+    # never leaks via repr; None until set (provisioning then fails loudly).
+    gpu_api_key: SecretStr | None = None
+    # Provider template id pinning the worker Docker image + env (infra/gpu-worker). None until
+    # the template is registered with the provider; ensure_worker fails loudly without it.
+    gpu_pod_template_id: str | None = None
+    # Queue idle for longer than this ⇒ tear the pod down. ge=1: zero would thrash a pod
+    # boot/teardown cycle on every provisioner tick.
+    gpu_idle_teardown_minutes: int = Field(default=10, ge=1)
+    # Monthly media-compute hard cap in cents; 0 = unlimited (token_budget_cents_month
+    # convention). At/over the cap, provisioning refuses and the S6.2 alert path fires.
+    media_gpu_monthly_cap_cents: int = Field(default=0, ge=0)
+    # Estimated pod cost per minute, used to accrue lease spend against the cap. Deliberately
+    # a conservative over-estimate by default (~$1.20/hr) — overestimating stops spend early;
+    # underestimating would let the cap overshoot.
+    gpu_pod_rate_cents_per_minute: int = Field(default=2, ge=0)
+    media_provisioner_interval_seconds: int = Field(default=60, ge=5)
+
+    @model_validator(mode="after")
+    def _cap_requires_rate(self) -> "Settings":
+        # A cap with a zero per-minute rate can never trip — the guardrail would silently not
+        # exist. Fail loud at startup instead (same philosophy as the critic bounds).
+        if self.media_gpu_monthly_cap_cents > 0 and self.gpu_pod_rate_cents_per_minute <= 0:
+            raise ValueError(
+                "media_gpu_monthly_cap_cents is set but gpu_pod_rate_cents_per_minute is 0 — "
+                "the spend cap could never trip; set a positive per-minute rate"
+            )
+        return self
 
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.
