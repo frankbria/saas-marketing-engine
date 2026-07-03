@@ -42,6 +42,10 @@ services:
   flower:
     image: mher/flower:2.0
     command: celery --broker=redis://redis:6379/0 flower --port=5555
+    environment:
+      # Loopback-only + private interface on the VPS, same trust model as the dashboard
+      # (no auth in v1). Required for the HTTP API (flower 2.x defaults it off).
+      FLOWER_UNAUTHENTICATED_API: "true"
     ports:
       - "127.0.0.1:5555:5555"
     depends_on:
