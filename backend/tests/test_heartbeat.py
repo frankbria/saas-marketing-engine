@@ -375,8 +375,14 @@ class _FakeSMTP:
 
 
 @pytest.fixture(autouse=True)
-def _reset_fake_smtp():
+def _reset_fake_smtp(monkeypatch):
     _FakeSMTP.instances = []
+    # Hermetic vault: earlier test files register real plaintexts (e.g. "a", "tok-abc") in the
+    # process-global secrets set via encrypt(); email-body redaction would then rewrite digest
+    # bodies and make these assertions order-dependent.
+    from app.secrets import vault
+
+    monkeypatch.setattr(vault, "_secrets", set())
 
 
 def test_raise_alert_stays_log_only_when_unconfigured(monkeypatch):
