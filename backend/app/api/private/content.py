@@ -9,6 +9,7 @@ a transient adapter failure surfaces as 503 so the operator retries rather than 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.channels.base import Retryable
@@ -16,6 +17,7 @@ from app.db import get_session
 from app.models import ContentItem, Product
 from app.models.content_item import ContentItemStatus
 from app.modules.crank.retract import retract_item
+from app.modules.metrics.funnel import metrics_by_content_item, zero_metrics
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -41,6 +43,44 @@ def list_content(product_id: int, session: SessionDep) -> list[ContentItem]:
         )
         .order_by(col(ContentItem.published_at).desc(), col(ContentItem.id).desc())
     ).all()
+
+
+@router.get("/{product_id}/calendar")
+def content_calendar(product_id: int, session: SessionDep) -> list[dict]:
+    """S6.3 calendar: every item across all statuses, newest-first by when it went (or will go)
+    live — COALESCE(published_at, scheduled_for, created_at) — each carrying its attributed funnel
+    metrics (zeros when nothing has been attributed to it yet)."""
+    product = _require_product(session, product_id)
+    per_item = metrics_by_content_item(session, product)
+    items = session.exec(
+        select(ContentItem)
+        .where(ContentItem.product_id == product_id)
+        .order_by(
+            func.coalesce(
+                col(ContentItem.published_at),
+                col(ContentItem.scheduled_for),
+                col(ContentItem.created_at),
+            ).desc(),
+            col(ContentItem.id).desc(),
+        )
+    ).all()
+    return [
+        {
+            "id": item.id,
+            "channel_id": item.channel_id,
+            "content_type": item.content_type,
+            "title": item.title,
+            "status": item.status,
+            "spot_check": item.spot_check,
+            "critic_score": item.critic_score,
+            "scheduled_for": item.scheduled_for,
+            "published_at": item.published_at,
+            "created_at": item.created_at,
+            "external_url": item.external_url,
+            "metrics": per_item.get(item.id, zero_metrics()),
+        }
+        for item in items
+    ]
 
 
 @router.get("/{product_id}/spot-check")

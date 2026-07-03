@@ -20,7 +20,8 @@ from app.modules.metrics.utm import resolve_attribution
 _Key = tuple[int | None, int | None]
 
 
-def _empty_row_values() -> dict[str, int]:
+def zero_metrics() -> dict[str, int]:
+    """The zeroed per-attribution metric shape — rollup row values and the calendar's default."""
     return {"impressions": 0, "visits": 0, "signups": 0, "paid": 0, "revenue_cents": 0}
 
 
@@ -33,7 +34,7 @@ def funnel_rollup(session: Session, product: Product) -> dict:
     metrics = session.exec(select(MetricEvent).where(MetricEvent.product_id == product.id)).all()
     for metric in metrics:
         key = (metric.channel_id, metric.content_item_id)
-        values = row_values.setdefault(key, _empty_row_values())
+        values = row_values.setdefault(key, zero_metrics())
         if metric.stage == MetricStage.IMPRESSION:
             stages["impressions"] += metric.value
             values["impressions"] += metric.value
@@ -48,7 +49,7 @@ def funnel_rollup(session: Session, product: Product) -> dict:
     ).all()
     for event in funnel_events:
         key = resolve_attribution(session, product.id, event.utm_source, event.utm_content)
-        values = row_values.setdefault(key, _empty_row_values())
+        values = row_values.setdefault(key, zero_metrics())
         if event.event_type == FunnelEventType.VISIT:
             stages["visits"] += 1
             values["visits"] += 1
@@ -89,3 +90,19 @@ def funnel_rollup(session: Session, product: Product) -> dict:
         attributed_rows.append(unattributed_row)
 
     return {"stages": stages, "revenue_cents": revenue_cents, "rows": attributed_rows}
+
+
+def metrics_by_content_item(session: Session, product: Product) -> dict[int, dict[str, int]]:
+    """Per-content-item slice of `funnel_rollup`: its attribution rows summed by
+    `content_item_id`, so per-item readers (the S6.3 calendar) reuse the same join instead of
+    re-deriving attribution. Channel-only and unattributed rows have no item to land on and are
+    dropped."""
+    per_item: dict[int, dict[str, int]] = {}
+    for row in funnel_rollup(session, product)["rows"]:
+        item_id = row["content_item_id"]
+        if item_id is None:
+            continue
+        values = per_item.setdefault(item_id, zero_metrics())
+        for field in values:
+            values[field] += row[field]
+    return per_item
