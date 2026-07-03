@@ -167,9 +167,9 @@ GitHub issues. Story IDs match TECH_SPEC §13. Acceptance criteria (AC) are writ
 ## Epic 5 — Crank media (Phase B: video + podcast) — gated on compute decision
 
 ### S5.0 — Phase B infrastructure
-**As the** Owner, **I want** Celery + Redis + Postgres + a GPU host introduced when media lands,
+**As the** Owner, **I want** Celery + Redis + Postgres + an ephemeral rented GPU worker introduced when media lands,
 **so that** long, parallel media jobs don't outgrow the in-process loop.
-- AC: queue + workers run media jobs with retries/visibility; SQLite→Postgres migration path exercised; GPU host provisioned (acknowledged new spend).
+- AC: queue + workers run media jobs with retries/visibility; SQLite→Postgres migration path exercised; ephemeral GPU provisioner stands a rented worker up on pending media jobs and tears it down when idle (per-job spend, monthly cap).
 
 ### S5.1 — Short-form video pipeline
 **As the** Engine, **I want** to produce short-form videos (script + voice + visuals) on the same crank + gates,

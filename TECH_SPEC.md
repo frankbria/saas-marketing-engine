@@ -56,8 +56,10 @@ the in-process worker loop), `next` (dashboard), `nginx` (fronts public landing 
 public funnel API; reverse-proxies the private dashboard on the allowlisted interface). SQLite
 file for state. Generated **per-product landing sites** are static-exported and served by nginx.
 
-**Phase B** introduces `celery worker` / `beat` / `flower` / `redis` / `postgres` and a GPU host
-**only when** long media (video/podcast) jobs make a real queue + parallel workers load-bearing.
+**Phase B** introduces `celery worker` / `beat` / `flower` / `redis` / `postgres` and an **ephemeral
+rented GPU worker** — provisioned from a commercial provider when `media`-queue jobs are pending,
+torn down when idle (decided 2026-07-03) — **only when** long media (video/podcast) jobs make a
+real queue + parallel workers load-bearing. Control plane stays on the VPS; only GPU minutes are rented.
 
 **Why this split:** the FastAPI app owns state + both API surfaces and schedules work via
 APScheduler; an in-process worker loop runs crank jobs with `job_run`-tracked retries. The
@@ -361,7 +363,7 @@ for the operator.
 **P2 Setup** → S2.1 templated site + funnel contract + UTM · S2.2 public funnel-ingest API split · S2.3 Stripe cc_sub · S2.4 email capture + welcome · S2.5 attribution chain · S2.6 accounts + human checklist (SPF/DKIM) + OAuth connect · S2.7 pre-QA smoke test · S2.8 launch checklist.
 **P3 QA gate** → S3.1 checklist gen · S3.2 pass/fail + go-live block.
 **P4 Crank core** → S4.1 APScheduler crank + worker loop · S4.2 social+blog generators + novelty · S4.3 critic+safety (1 call) · S4.4 deterministic guard (blocklist + claim-trace) · S4.5 publish adapters (blog + Reddit, idempotency + pacing) · S4.6 per-channel kill switch · S4.7 retract (delete) · S4.8 OAuth refresh handling · S4.9 spot-check sampling.
-**P5 Crank media** → S5.0 Celery/Redis/Postgres + GPU infra · S5.1 video pipeline · S5.2 podcast pipeline.
+**P5 Crank media** → S5.0 Celery/Redis/Postgres + ephemeral rented GPU infra · S5.1 video pipeline · S5.2 podcast pipeline.
 **P6 Metrics & acceptance** → S6.1 attributed funnel+revenue dashboard · S6.2 heartbeat + alerts · S6.3 content calendar · S6.4 Auto Author end-to-end (DoD).
 
 Each bullet = one or a few atomic issues; within a phase, model/migration/API land before UI;

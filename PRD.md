@@ -32,7 +32,7 @@ over customers" — explicitly out of scope.
 - G3. Keep the **crank autonomous** — content generates, passes an AI + deterministic quality gate, and publishes on a schedule with no per-post human approval (a small random sample is spot-checked async, never blocking).
 - G4. Confine humans to two gates: **(a) account/payment/domain setup** and **(b) pre-launch QA click-through**.
 - G5. Give the operator (Greg) a **dashboard** to onboard products, watch the funnel, and run the cycle without touching code.
-- G6. **Minimize new spend** — no new infra services beyond the existing VPS. AI tokens are real metered spend, capped per product (see NFR-3); Phase B media GPU is acknowledged future spend decided separately.
+- G6. **Minimize new spend** — no new infra services beyond the existing VPS. AI tokens are real metered spend, capped per product (see NFR-3); Phase B media GPU is **ephemeral rented compute** (stood up per job batch, torn down when idle — decided 2026-07-03, see §12).
 - G7. **Zero product-specific hardcoding.** The engine is generic over products. Auto Author is the **first fixture/use case only** — treated identically to any future product. Everything product-specific (repo, domain, brand, ICP, channels, pricing, credentials) lives in the **Product record / config**, never in engine code. A future product must onboard with no code changes (also DoD-1). Auto Author may appear only as test-fixture/example data and the acceptance demo — never as a branch in business logic.
 
 ### Non-goals (v1)
@@ -158,7 +158,7 @@ Everything else is autonomous. Individual posts are not approved pre-publish; a 
 ## 7. Non-functional requirements
 - NFR-1. **No multi-tenancy** — single owner; skip tenant auth/isolation. **Two API surfaces:** the **private** dashboard/operator API is firewalled with **no auth in v1** (bind private interface; SSH tunnel / IP allowlist); the **public** funnel-ingest API + generated landing sites are internet-facing via nginx, rate-limited, with CORS for the product origin.
 - NFR-2. **Runs on the existing Hostinger dev VPS**; check port conflicts before binding; verify CORS before first remote deploy.
-- NFR-3. **Minimize new spend.** No new infra services beyond the existing VPS. AI tokens (Claude Agent SDK) are real metered spend, capped by a **per-product monthly token budget with a hard stop**; usage logged per `job_run`. Phase B media compute (GPU) is acknowledged future spend, decided separately.
+- NFR-3. **Minimize new spend.** No new infra services beyond the existing VPS. AI tokens (Claude Agent SDK) are real metered spend, capped by a **per-product monthly token budget with a hard stop**; usage logged per `job_run`. Phase B media compute is an **ephemeral rented GPU** billed per job-minute with teardown-on-idle and a monthly cap — no persistent host (decided 2026-07-03).
 - NFR-4. Crank work for one product/channel must not block others; failed jobs retry. (v1: APScheduler + in-process worker loop + `job_run` retries. Phase B introduces Celery/Redis when long media jobs make a real queue load-bearing.)
 - NFR-5. Secrets encrypted at rest; never logged.
 - NFR-6. Autonomous publishing must be **pausable per product/channel** instantly from the dashboard (kill switch), checked immediately before each publish.
@@ -199,7 +199,7 @@ Checklist generation, pass/fail tracking, go-live block.
 APScheduler scheduler; generator → critic+safety (1 LLM call) + deterministic guard; novelty; publish (owned blog + Reddit, API-first); idempotency + pacing; metrics + **attribution**; **heartbeat + alerts**; per-channel kill switch; retract; async spot-check. Content: **text/social + SEO blog**.
 
 **Phase 5 — Crank media (Phase B content)**
-Short-form video + podcast pipelines on the same crank; introduce Celery/Redis/Postgres + GPU host. (Requires the separate compute-spend decision.)
+Short-form video + podcast pipelines on the same crank; introduce Celery/Redis/Postgres + an ephemeral rented GPU worker. (Compute-spend decision resolved 2026-07-03: rent per job batch, tear down when idle.)
 
 **Phase 6 — Metrics & acceptance**
 Attributed funnel + revenue dashboard; **onboard Auto Author end-to-end** to satisfy the done-state.
@@ -225,5 +225,5 @@ Attributed funnel + revenue dashboard; **onboard Auto Author end-to-end** to sat
 ## 12. Open questions / risks
 - **Cold-account reach** is the top risk: new accounts auto-posting promo links get shadowbanned, and reach silently → 0. Mitigations: owned-first channels, warm-up, value-first Reddit policy, zero-reach alerting. Re-evaluate adding X/IG/YouTube only once accounts are warmed.
 - **AI token cost** scales with products × channels × cadence × regenerations; the per-product budget + hard stop bounds it but needs monitoring once live.
-- **Phase B compute**: video/podcast need a GPU host (new spend) — a separate decision before Phase 5.
+- **Phase B compute** — *resolved 2026-07-03*: video/podcast use an ephemeral rented commercial GPU (RunPod-class, per-second billing) stood up when media jobs queue and torn down when idle; monthly spend cap + alert. No persistent GPU host. See issue #28 (S5.0).
 - **Reddit ToS/subreddit rules** vary; the value-first content policy + per-subreddit targeting must be respected to avoid bans.
