@@ -23,7 +23,7 @@ const STATUS_BADGE: Partial<Record<ContentItemStatus, string>> = {
   retracted: "bg-amber-100 text-amber-800",
 }
 
-export interface CalendarMonth {
+interface CalendarMonth {
   year: number
   month: number // 1-based
 }
@@ -36,16 +36,8 @@ function currentUtcMonth(): CalendarMonth {
 // S6.3: month grid of content items on their anchor day (published → scheduled → created), with
 // status badges, spot-check markers, and compact per-item performance. Client-side month paging
 // only — the full item list is already in props.
-export function CalendarGrid({
-  items,
-  initialMonth,
-}: {
-  items: CalendarItem[]
-  initialMonth?: CalendarMonth
-}) {
-  const [{ year, month }, setMonth] = useState<CalendarMonth>(
-    () => initialMonth ?? currentUtcMonth()
-  )
+export function CalendarGrid({ items }: { items: CalendarItem[] }) {
+  const [{ year, month }, setMonth] = useState<CalendarMonth>(currentUtcMonth)
 
   const weeks = monthGrid(year, month, items)
   const monthLabel = new Date(Date.UTC(year, month - 1, 1)).toLocaleString(
