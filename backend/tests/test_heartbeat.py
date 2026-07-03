@@ -319,6 +319,33 @@ def test_run_heartbeat_fires_alerts_via_choke_point(engine, caplog):
     assert any("ALERT oauth_token_dead" in r.getMessage() for r in caplog.records)
 
 
+def test_run_heartbeat_one_product_crash_does_not_block_others(engine, monkeypatch):
+    """§8.3: a crashed job never blocks other products."""
+    import app.modules.heartbeat as heartbeat_mod
+
+    p1 = _make_product(engine)
+    p2 = _make_product(engine, slug="beta")
+    _make_channel(engine, p1.id, ChannelType.BLOG)
+    _make_channel(engine, p2.id, ChannelType.BLOG)
+
+    real_build = heartbeat_mod.build_digest
+
+    def _boom_on_p1(session, product, now):
+        if product.id == p1.id:
+            raise RuntimeError("boom")
+        return real_build(session, product, now)
+
+    monkeypatch.setattr(heartbeat_mod, "build_digest", _boom_on_p1)
+
+    with Session(engine) as s:
+        created = run_heartbeat(s, NOW)
+
+    assert [r.product_id for r in created] == [p2.id]
+    with Session(engine) as s:
+        rows = s.exec(select(HeartbeatDigest)).all()
+    assert {r.product_id for r in rows} == {p2.id}
+
+
 # --- email delivery (S6.2 wires it into the raise_alert choke point) ----------
 
 

@@ -15,6 +15,7 @@ content_item has no failed_at, and an unresolved failure should keep surfacing d
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 
 from sqlmodel import Session, func, select
@@ -31,6 +32,8 @@ from app.models import (
 )
 from app.models.product import Product
 from app.modules.alerts import raise_alert
+
+logger = logging.getLogger(__name__)
 
 DIGEST_WINDOW = timedelta(hours=24)
 
@@ -173,22 +176,30 @@ def run_heartbeat(session: Session, now: datetime) -> list[HeartbeatDigest]:
     """
     created: list[HeartbeatDigest] = []
     for product in session.exec(select(Product)).all():
-        if _already_ran_today(session, product.id, now):
-            continue
+        try:
+            if _already_ran_today(session, product.id, now):
+                continue
 
-        digest = build_digest(session, product, now)
-        alerts = evaluate_alerts(session, product, digest, now)
-        row = HeartbeatDigest(
-            product_id=product.id,
-            window_start=now - DIGEST_WINDOW,
-            window_end=now,
-            digest_json=json.dumps(digest),
-            alerts_json=json.dumps(alerts),
-        )
-        session.add(row)
-        session.commit()
-        session.refresh(row)
-        created.append(row)
+            digest = build_digest(session, product, now)
+            alerts = evaluate_alerts(session, product, digest, now)
+            row = HeartbeatDigest(
+                product_id=product.id,
+                window_start=now - DIGEST_WINDOW,
+                window_end=now,
+                digest_json=json.dumps(digest),
+                alerts_json=json.dumps(alerts),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            created.append(row)
+        except Exception:
+            # §8.3: a crashed job never blocks other products. Roll back this product's partial
+            # work and move on — the failure is itself operator-visible via the alert choke point.
+            session.rollback()
+            logger.exception("heartbeat digest failed for product %s", product.id)
+            raise_alert("heartbeat_failed", "heartbeat digest crashed", product_id=product.id)
+            continue
 
         for alert in alerts:
             raise_alert(
