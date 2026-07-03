@@ -1,7 +1,11 @@
+// Pin a non-UTC zone BEFORE any Date use so local-time parsing bugs surface deterministically
+// (CI runs in UTC, where naive-parse bugs are invisible).
+process.env.TZ = "America/Los_Angeles"
+
 import { describe, expect, it } from "vitest"
 
 import { type CalendarItem } from "./api"
-import { anchorDate, monthGrid } from "./calendar"
+import { anchorDate, monthGrid, parseUtc } from "./calendar"
 
 function item(overrides: Partial<CalendarItem> = {}): CalendarItem {
   return {
@@ -37,6 +41,30 @@ describe("anchorDate", () => {
 
   it("falls back to created_at when nothing else is set", () => {
     expect(anchorDate(item())).toBe("2026-07-10T12:00:00Z")
+  })
+})
+
+describe("parseUtc", () => {
+  it("treats offset-less API timestamps as UTC", () => {
+    // FastAPI serializes the DB's naive-UTC datetimes with no offset — this is the real wire format.
+    expect(parseUtc("2026-07-01T23:30:00").toISOString()).toBe(
+      "2026-07-01T23:30:00.000Z"
+    )
+  })
+
+  it("parses explicit-offset timestamps unchanged", () => {
+    expect(parseUtc("2026-07-01T23:30:00Z").toISOString()).toBe(
+      "2026-07-01T23:30:00.000Z"
+    )
+    expect(parseUtc("2026-07-01T23:30:00+02:00").toISOString()).toBe(
+      "2026-07-01T21:30:00.000Z"
+    )
+  })
+
+  it("handles fractional seconds", () => {
+    expect(parseUtc("2026-07-01T23:30:00.123456").toISOString()).toBe(
+      "2026-07-01T23:30:00.123Z"
+    )
   })
 })
 
@@ -76,6 +104,24 @@ describe("monthGrid", () => {
       .flat()
       .find((c) => c.day === 15)
     expect(day15?.items).toHaveLength(1)
+  })
+
+  it("buckets offset-less wire-format timestamps on their UTC day", () => {
+    // A local-time parse in America/Los_Angeles would land this on July 16.
+    const a = item({ id: 1, published_at: "2026-07-15T23:30:00" })
+    const day15 = monthGrid(2026, 7, [a])
+      .flat()
+      .find((c) => c.day === 15)
+    expect(day15?.items).toHaveLength(1)
+  })
+
+  it("keeps early-UTC-morning items in the month for west-of-UTC viewers", () => {
+    // A local-time parse in America/Los_Angeles would shift this to June 30 and drop it from July.
+    const a = item({ id: 1, published_at: "2026-07-01T02:00:00" })
+    const day1 = monthGrid(2026, 7, [a])
+      .flat()
+      .find((c) => c.day === 1)
+    expect(day1?.items).toHaveLength(1)
   })
 
   it("keeps multiple items on the same day in input order", () => {

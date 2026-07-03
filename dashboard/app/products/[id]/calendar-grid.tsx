@@ -148,7 +148,7 @@ function ItemChip({ item }: { item: CalendarItem }) {
       <span
         className={`self-start truncate rounded px-2 py-0.5 text-xs ${STATUS_BADGE[item.status] ?? "bg-muted text-muted-foreground"}`}
       >
-        {item.status}
+        {item.status.replace(/_/g, " ")}
       </span>
       {hasPerformance && (
         <span className="truncate text-muted-foreground">

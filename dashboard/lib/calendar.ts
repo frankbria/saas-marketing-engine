@@ -17,6 +17,14 @@ export interface DayCell {
 
 export type Week = DayCell[]
 
+// The API serializes the DB's naive-UTC datetimes with no offset ("2026-07-01T23:30:00").
+// The ES spec parses offset-less date-times as LOCAL time, which would shift items across
+// days for non-UTC viewers — so treat offset-less strings as UTC.
+export function parseUtc(timestamp: string): Date {
+  const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/.test(timestamp)
+  return new Date(hasOffset ? timestamp : `${timestamp}Z`)
+}
+
 // Monday-start month grid: weeks of 7 cells, real days carrying that UTC day's items.
 // `month` is 1-based (1 = January).
 export function monthGrid(
@@ -26,7 +34,7 @@ export function monthGrid(
 ): Week[] {
   const byDay = new Map<number, CalendarItem[]>()
   for (const item of items) {
-    const d = new Date(anchorDate(item))
+    const d = parseUtc(anchorDate(item))
     if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1) continue
     const day = d.getUTCDate()
     byDay.set(day, [...(byDay.get(day) ?? []), item])

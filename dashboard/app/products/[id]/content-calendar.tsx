@@ -2,8 +2,8 @@ import { getContentCalendar, type CalendarItem } from "@/lib/api"
 
 import { CalendarGrid } from "./calendar-grid"
 
-// S6.3: content calendar. Fetches its own data (like Funnel) since the calendar endpoint 404s
-// independently of the rest of the page until the backend lane has landed; degrade to empty.
+// S6.3: content calendar. Fetches its own data and degrades to an empty grid on fetch failure,
+// matching the Funnel section's convention for sections whose endpoint can 404 independently.
 export async function ContentCalendar({ productId }: { productId: number }) {
   let items: CalendarItem[] = []
   try {
