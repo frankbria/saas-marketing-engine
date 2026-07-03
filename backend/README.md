@@ -184,6 +184,23 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
 - `dashboard/app/products/[id]/funnel.tsx` — renders the rollup as the product page's **Funnel**
   section.
 
+### Content calendar (S6.3)
+
+- `api/private/content.py` — `GET /api/private/content/{product_id}/calendar` returns every
+  `ContentItem` regardless of status, newest-first by `COALESCE(published_at, scheduled_for,
+  created_at)`, each carrying its own attributed funnel metrics (zeros when nothing's attributed
+  yet).
+- `modules/metrics/funnel.py` — `metrics_by_content_item` sums `funnel_rollup`'s attribution rows
+  by `content_item_id` (channel-only and unattributed rows have no item to land on and are
+  dropped), so the calendar reuses the funnel's join instead of re-deriving attribution;
+  `zero_metrics` (renamed from `_empty_row_values`) is the shared zeroed shape for both callers.
+- `dashboard/lib/calendar.ts` + `app/products/[id]/calendar-grid.tsx` — a pure, unit-tested
+  month-grid bucketer (`anchorDate` picks `published_at ?? scheduled_for ?? created_at`; UTC-only
+  date math so offset-less API timestamps never drift a day) rendered as a client-side calendar
+  with prev/next month paging, status badges, spot-check markers (S4.9's `spot_check` flag), and
+  compact per-item performance. `app/products/[id]/content-calendar.tsx` fetches and wires it into
+  the product page, degrading to an empty grid on fetch failure (same convention as **Funnel**).
+
 v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
 No Celery/Redis/Postgres in v1 (Phase B).

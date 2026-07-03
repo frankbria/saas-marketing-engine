@@ -18,6 +18,7 @@ import {
 } from "@/lib/api"
 
 import { ChannelSetup } from "./channel-setup"
+import { ContentCalendar } from "./content-calendar"
 import { Funnel } from "./funnel"
 import { LaunchChecklist } from "./launch-checklist"
 import { PublishedContent } from "./published-content"
@@ -105,6 +106,8 @@ export default async function ProductDetailPage({
       <h1 className="text-xl font-medium">{product.name}</h1>
 
       <Funnel productId={productId} />
+
+      <ContentCalendar productId={productId} />
 
       {brief ? (
         <StrategyReview product={product} brief={brief} />

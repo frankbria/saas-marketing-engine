@@ -4,6 +4,7 @@ import {
   apiFetch,
   approveStrategy,
   connectChannel,
+  getContentCalendar,
   getFunnel,
   getQaChecklist,
   getSetupChecklist,
@@ -216,6 +217,39 @@ describe("QA gate (S3.2)", () => {
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toContain("/api/private/qa/7/go-live")
     expect(init?.method).toBe("POST")
+  })
+})
+
+describe("content calendar (S6.3)", () => {
+  it("getContentCalendar GETs the calendar endpoint and returns the parsed array", async () => {
+    const body = [
+      {
+        id: 3,
+        channel_id: 1,
+        content_type: "post",
+        title: "Launch post",
+        status: "published",
+        spot_check: true,
+        critic_score: 88,
+        scheduled_for: "2026-07-01T09:00:00Z",
+        published_at: "2026-07-01T09:00:05Z",
+        created_at: "2026-06-30T12:00:00Z",
+        external_url: "https://reddit.com/r/x/3",
+        metrics: {
+          impressions: 10,
+          visits: 4,
+          signups: 1,
+          paid: 0,
+          revenue_cents: 0,
+        },
+      },
+    ]
+    const fetchMock = mockFetch(body)
+    const data = await getContentCalendar(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/content/1/calendar")
+    expect(init?.method).toBe("GET")
+    expect(data).toEqual(body)
   })
 })
 
