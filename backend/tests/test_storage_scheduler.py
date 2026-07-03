@@ -19,6 +19,7 @@ from app.models import JobRun, JobStatus
 from app.scheduler import (
     _crank_tick,
     _heartbeat,
+    _heartbeat_digest_tick,
     _publish_tick,
     _worker_tick,
     create_scheduler,
@@ -174,7 +175,7 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
     # Built but not started — no background thread to tear down.
     scheduler = create_scheduler()
     jobs = {j.id: j for j in scheduler.get_jobs()}
-    assert set(jobs) == {"worker", "heartbeat", "crank", "publish"}
+    assert set(jobs) == {"worker", "heartbeat", "crank", "publish", "heartbeat_digest"}
 
     # Pin each job's callable + interval, so a mis-wiring (wrong func/interval) fails the test.
     expected = {
@@ -186,6 +187,13 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
     for job_id, (func, interval) in expected.items():
         assert jobs[job_id].func is func
         assert jobs[job_id].trigger.interval == timedelta(seconds=interval)
+
+    # S6.2 digest is cron (daily at a fixed UTC hour), not interval — a restart must not reset
+    # the cadence.
+    digest = jobs["heartbeat_digest"]
+    assert digest.func is _heartbeat_digest_tick
+    assert str(settings.heartbeat_digest_hour_utc) in str(digest.trigger)
+    assert "cron" in str(digest.trigger)
 
 
 def test_no_queue_cluster_deps_in_v1():

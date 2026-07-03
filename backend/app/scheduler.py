@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import engine
 from app.modules.crank.crank import enqueue_due_cranks
 from app.modules.crank.publish import pace_content, publish_scheduled
+from app.modules.heartbeat import run_heartbeat
 from app.worker import enqueue, run_due_jobs
 
 
@@ -31,6 +32,13 @@ def _worker_tick() -> None:
 def _crank_tick() -> None:
     with Session(engine) as session:
         enqueue_due_cranks(session, datetime.now(UTC))
+
+
+def _heartbeat_digest_tick() -> None:
+    # S6.2 daily digest + alerts (§8.4). Cron (not interval) so a process restart doesn't reset
+    # the cadence; run_heartbeat is idempotent per UTC day, so a re-fire is a no-op.
+    with Session(engine) as session:
+        run_heartbeat(session, datetime.now(UTC))
 
 
 def _publish_tick() -> None:
@@ -56,5 +64,12 @@ def create_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         _publish_tick, "interval", seconds=settings.crank_check_interval_seconds, id="publish"
+    )
+    scheduler.add_job(
+        _heartbeat_digest_tick,
+        "cron",
+        hour=settings.heartbeat_digest_hour_utc,
+        timezone="UTC",
+        id="heartbeat_digest",
     )
     return scheduler

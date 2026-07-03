@@ -29,15 +29,24 @@ def _mask(email: str) -> str:
 
 
 def _body(product: Product) -> str:
-    return (
-        f"Thanks for your interest in {product.name}!\n\n" "We'll be in touch shortly. — The team\n"
-    )
+    return f"Thanks for your interest in {product.name}!\n\nWe'll be in touch shortly. — The team\n"
+
+
+def _smtp_send(msg: EmailMessage) -> None:
+    """Transport one message over the configured SMTP server. Raises on failure — each caller
+    wraps this in its own best-effort guard with caller-specific logging."""
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=_TIMEOUT_SECONDS) as smtp:
+        if settings.smtp_starttls:
+            # Verified context — credentials must not travel over a spoofable TLS session.
+            smtp.starttls(context=ssl.create_default_context())
+        if settings.smtp_user and settings.smtp_password:
+            smtp.login(settings.smtp_user, settings.smtp_password.get_secret_value())
+        smtp.send_message(msg)
 
 
 def send_welcome(to: str, product: Product) -> None:
     """Send one welcome email to a freshly-captured lead. No-op if SMTP is unconfigured."""
-    host = settings.smtp_host
-    if not host:
+    if not settings.smtp_host:
         logger.info("SMTP not configured (SME_SMTP_HOST); skipping welcome email to %s", _mask(to))
         return
 
@@ -49,13 +58,59 @@ def send_welcome(to: str, product: Product) -> None:
         msg["To"] = to
         msg["Subject"] = f"Welcome to {product.name}"
         msg.set_content(_body(product))
-
-        with smtplib.SMTP(host, settings.smtp_port, timeout=_TIMEOUT_SECONDS) as smtp:
-            if settings.smtp_starttls:
-                # Verified context — credentials must not travel over a spoofable TLS session.
-                smtp.starttls(context=ssl.create_default_context())
-            if settings.smtp_user and settings.smtp_password:
-                smtp.login(settings.smtp_user, settings.smtp_password.get_secret_value())
-            smtp.send_message(msg)
+        _smtp_send(msg)
     except Exception:  # best-effort: delivery failure must not break lead capture
         logger.exception("welcome email to %s failed", _mask(to))
+
+
+def send_alert_email(to: str, kind: str, message: str) -> None:
+    """One operator alert email (S6.2). No-op if SMTP is unconfigured; best-effort otherwise —
+    alert delivery failing must never break the pipeline that raised the alert."""
+    if not settings.smtp_host:
+        logger.info("SMTP not configured (SME_SMTP_HOST); skipping alert email (%s)", kind)
+        return
+
+    try:
+        msg = EmailMessage()
+        msg["From"] = settings.smtp_from or settings.smtp_user or "no-reply@localhost"
+        msg["To"] = to
+        msg["Subject"] = f"[SME alert] {kind}"
+        msg.set_content(f"{message}\n")
+        _smtp_send(msg)
+    except Exception:
+        logger.exception("alert email (%s) failed", kind)
+
+
+def _digest_body(digest: dict, alerts: list[dict]) -> str:
+    lines = ["Heartbeat digest (last 24h):", ""]
+    for row in digest["channels"]:
+        lines.append(
+            f"  {row['channel_type']}: published={row['published']} "
+            f"failed={row['failed']} reach={row['reach']}"
+        )
+    lines.append("")
+    if alerts:
+        lines.append("Alerts:")
+        lines.extend(f"  [{a['kind']}] {a['message']}" for a in alerts)
+    else:
+        lines.append("No alerts.")
+    return "\n".join(lines) + "\n"
+
+
+def send_digest(to: str, product: Product, digest: dict, alerts: list[dict]) -> None:
+    """Daily heartbeat digest email (S6.2). No-op if SMTP is unconfigured; best-effort otherwise."""
+    if not settings.smtp_host:
+        logger.info(
+            "SMTP not configured (SME_SMTP_HOST); skipping digest email for product %s", product.id
+        )
+        return
+
+    try:
+        msg = EmailMessage()
+        msg["From"] = settings.smtp_from or settings.smtp_user or "no-reply@localhost"
+        msg["To"] = to
+        msg["Subject"] = f"[SME heartbeat] {product.name}: {len(alerts)} alert(s)"
+        msg.set_content(_digest_body(digest, alerts))
+        _smtp_send(msg)
+    except Exception:
+        logger.exception("digest email for product %s failed", product.id)

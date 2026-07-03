@@ -66,6 +66,22 @@ class Settings(BaseSettings):
     # Independent of the LLM critic — a non-LLM safety net (§8.2/FR-23).
     guard_blocklist: Annotated[list[str], NoDecode] = list(_DEFAULT_GUARD_BLOCKLIST)
 
+    # S6.2 heartbeat digest + alerts (§8.4/FR-31). The daily digest job runs at this UTC hour
+    # (cron, not interval — an interval would reset on every process restart). Bounded like the
+    # critic settings so a bad deploy value fails at startup, not silently at 3am.
+    heartbeat_digest_hour_utc: int = Field(default=6, ge=0, le=23)
+    # "Repeated publish-fail" alert: fires while >= this many items sit in `publish_failed` on one
+    # channel. A stock, not a 24h flow — content_item has no failed_at, and re-surfacing daily
+    # until resolved is the operator-useful behavior anyway (matches the dead-token alert).
+    heartbeat_publish_fail_threshold: int = Field(default=2, ge=1)
+    # Zero-reach (shadowban signal): a channel that published within this window but earned zero
+    # impressions over it. Only channels that actually published can trip it — a quiet channel is
+    # not a shadowban signal.
+    heartbeat_zero_reach_window_days: int = Field(default=7, ge=1)
+    # Operator address for alert + digest emails. Unset ⇒ delivery stays log-only (raise_alert's
+    # v1 behavior); requires smtp_host too, same degrade-gracefully contract as the welcome email.
+    alert_email_to: str | None = None
+
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.
     rate_limit_requests: int = 60
