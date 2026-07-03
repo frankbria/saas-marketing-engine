@@ -16,6 +16,35 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # S5.0 (#28): real services for the Phase B integration tests — the Celery media-queue
+    # round-trip needs a Redis broker, and the SQLite→Postgres migration path is exercised
+    # on every push (repo policy: no mocking of infrastructure).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sme
+          POSTGRES_PASSWORD: sme
+          POSTGRES_DB: sme_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sme"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      SME_TEST_POSTGRES_URL: postgresql+psycopg://sme:sme@localhost:5432/sme_test
+      SME_CELERY_BROKER_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
         with:
