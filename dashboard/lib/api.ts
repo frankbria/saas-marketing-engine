@@ -146,6 +146,31 @@ export interface ContentItem {
   created_at: string
 }
 
+// S6.3: content calendar — every content item across all statuses with its per-item funnel
+// metrics (zeros when none). Newest first, same ordering the backend returns.
+export interface CalendarItemMetrics {
+  impressions: number
+  visits: number
+  signups: number
+  paid: number
+  revenue_cents: number
+}
+
+export interface CalendarItem {
+  id: number
+  channel_id: number
+  content_type: string
+  title: string | null
+  status: ContentItemStatus
+  spot_check: boolean
+  critic_score: number | null
+  scheduled_for: string | null
+  published_at: string | null
+  created_at: string
+  external_url: string | null
+  metrics: CalendarItemMetrics
+}
+
 // S6.1: attributed funnel + revenue rollup (mirrors the backend funnel response). Stage totals
 // are product-wide; rows attribute each stage to the channel/content item that drove it (a null
 // channel_id/content_item_id row holds the unattributed remainder).
@@ -382,3 +407,8 @@ export const goLive = (productId: number) =>
 // by the channel/content item that drove each conversion. 404s for an unknown product.
 export const getFunnel = (productId: number) =>
   apiFetch<Funnel>(`/metrics/${productId}/funnel`, { method: "GET" })
+
+// S6.3: full content calendar — all statuses (not just published/retracted), newest first, each
+// item carrying its own funnel metrics.
+export const getContentCalendar = (productId: number) =>
+  apiFetch<CalendarItem[]>(`/content/${productId}/calendar`, { method: "GET" })
