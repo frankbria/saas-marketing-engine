@@ -19,6 +19,7 @@ from app.models import JobRun, JobStatus
 from app.scheduler import (
     _crank_tick,
     _heartbeat,
+    _heartbeat_digest_tick,
     _publish_tick,
     _worker_tick,
     create_scheduler,
@@ -174,7 +175,7 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
     # Built but not started — no background thread to tear down.
     scheduler = create_scheduler()
     jobs = {j.id: j for j in scheduler.get_jobs()}
-    assert set(jobs) == {"worker", "heartbeat", "crank", "publish"}
+    assert set(jobs) == {"worker", "heartbeat", "crank", "publish", "heartbeat_digest"}
 
     # Pin each job's callable + interval, so a mis-wiring (wrong func/interval) fails the test.
     expected = {
@@ -182,6 +183,13 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
         "heartbeat": (_heartbeat, settings.heartbeat_interval_seconds),
         "crank": (_crank_tick, settings.crank_check_interval_seconds),
         "publish": (_publish_tick, settings.crank_check_interval_seconds),
+        # S6.2 digest: hourly guarded tick (not cron) so a process down at the digest hour
+        # catches up on its next tick; the tick's hour-of-day guard + per-day idempotency in
+        # run_heartbeat keep it to one digest per UTC day.
+        "heartbeat_digest": (
+            _heartbeat_digest_tick,
+            settings.heartbeat_digest_check_interval_seconds,
+        ),
     }
     for job_id, (func, interval) in expected.items():
         assert jobs[job_id].func is func

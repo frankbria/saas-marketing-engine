@@ -130,18 +130,27 @@ def get_credential_expiry(
 _redaction_installed = False
 
 
-def _redact_record(record: logging.LogRecord) -> None:
+def redact(text: str) -> str:
+    """Scrub every registered secret from `text`. For content leaving the process by a
+    non-log path (e.g. S6.2 alert/digest emails) — the log-record factory can't see those."""
     # Snapshot under the lock (the set may mutate from other threads) and replace
     # longest-first so an overlapping shorter secret can't leave part of a longer one.
     with _secrets_lock:
         secrets = sorted(_secrets, key=len, reverse=True)
-    if not secrets:
+    for s in secrets:
+        text = text.replace(s, REDACTED)
+    return text
+
+
+def _redact_record(record: logging.LogRecord) -> None:
+    with _secrets_lock:
+        has_secrets = bool(_secrets)
+    if not has_secrets:
         return
     msg = record.getMessage()
-    if any(s in msg for s in secrets):
-        for s in secrets:
-            msg = msg.replace(s, REDACTED)
-        record.msg = msg
+    redacted = redact(msg)
+    if redacted != msg:
+        record.msg = redacted
         record.args = ()
 
 

@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import engine
 from app.modules.crank.crank import enqueue_due_cranks
 from app.modules.crank.publish import pace_content, publish_scheduled
+from app.modules.heartbeat import run_heartbeat
 from app.worker import enqueue, run_due_jobs
 
 
@@ -31,6 +32,18 @@ def _worker_tick() -> None:
 def _crank_tick() -> None:
     with Session(engine) as session:
         enqueue_due_cranks(session, datetime.now(UTC))
+
+
+def _heartbeat_digest_tick() -> None:
+    # S6.2 daily digest + alerts (§8.4). Polled hourly with an hour-of-day guard instead of a
+    # cron trigger: a process that was down at the digest hour still catches up on its next tick
+    # (the watchdog must not silently skip a day), and run_heartbeat's per-UTC-day idempotency
+    # makes every extra tick a no-op.
+    now = datetime.now(UTC)
+    if now.hour < settings.heartbeat_digest_hour_utc:
+        return
+    with Session(engine) as session:
+        run_heartbeat(session, now)
 
 
 def _publish_tick() -> None:
@@ -56,5 +69,11 @@ def create_scheduler() -> BackgroundScheduler:
     )
     scheduler.add_job(
         _publish_tick, "interval", seconds=settings.crank_check_interval_seconds, id="publish"
+    )
+    scheduler.add_job(
+        _heartbeat_digest_tick,
+        "interval",
+        seconds=settings.heartbeat_digest_check_interval_seconds,
+        id="heartbeat_digest",
     )
     return scheduler
