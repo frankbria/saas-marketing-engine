@@ -24,7 +24,7 @@ from app.models import GpuLease, GpuLeaseStatus
 from app.modules import alerts
 from app.modules.media import provisioner as provisioner_mod
 from app.modules.media import queue as queue_mod
-from app.modules.media.provisioner import GpuProvisioner
+from app.modules.media.provisioner import GpuProvisioner, PodState
 
 logger = logging.getLogger("app.media.orchestrator")
 
@@ -61,10 +61,17 @@ def month_to_date_gpu_cost_cents(session: Session, now: datetime) -> int:
     their recorded cost, plus the active lease accrued at the configured rate."""
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     total = 0
-    leases = session.exec(select(GpuLease).where(GpuLease.started_at >= month_start)).all()
+    # ACTIVE leases are included regardless of start date: one spanning the month rollover
+    # must keep accruing against the new month's cap (clamped to the month start), not
+    # escape it entirely.
+    leases = session.exec(
+        select(GpuLease).where(
+            (GpuLease.started_at >= month_start) | (GpuLease.status == GpuLeaseStatus.ACTIVE)
+        )
+    ).all()
     for lease in leases:
         if lease.status == GpuLeaseStatus.ACTIVE:
-            total += _lease_cost_cents(lease.started_at, now)
+            total += _lease_cost_cents(max(_aware(lease.started_at), month_start), now)
         else:
             total += lease.cost_cents
     return total
@@ -117,6 +124,13 @@ def _decide(
             lease.idle_since = None
             session.add(lease)
             session.commit()
+        if depth > 0 and not worker_busy() and not worker_online():
+            # Work is pending but no worker answers: either the pod is still booting
+            # (workers take minutes to join) or the provider reclaimed it out-of-band
+            # (spot loss/crash). The provider is the source of truth — no grace timer.
+            provider = provider or provisioner_mod.build_provider()
+            if provider.status() is PodState.NONE:
+                _mark_lost(session, now, lease)
         return
 
     if lease.idle_since is None:
@@ -154,6 +168,24 @@ def _boot(session: Session, now: datetime, provider: GpuProvisioner | None, dept
     session.commit()
     _clear_alert("gpu_provision_failed")
     logger.info("media GPU pod %s provisioned (%d job(s) pending)", pod_id, depth)
+
+
+def _mark_lost(session: Session, now: datetime, lease: GpuLease) -> None:
+    """Close out a lease whose pod the provider no longer has. Billing already stopped
+    (nothing exists to bill); the next tick reboots for whatever is still queued — that's
+    what keeps "no manual action" true through a spot reclaim."""
+    lease.status = GpuLeaseStatus.LOST
+    lease.ended_at = now
+    lease.cost_cents = _lease_cost_cents(lease.started_at, now)
+    session.add(lease)
+    session.commit()
+    alerts.raise_alert(
+        "gpu_pod_lost",
+        f"media GPU pod {lease.pod_id} disappeared at the provider mid-lease — "
+        "lease closed; a replacement boots on the next tick if jobs are still queued",
+        pod_id=lease.pod_id,
+        provider=lease.provider,
+    )
 
 
 def _teardown(

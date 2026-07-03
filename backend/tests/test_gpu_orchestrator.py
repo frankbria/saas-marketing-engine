@@ -263,6 +263,61 @@ def test_month_to_date_ignores_previous_months(session):
     assert month_to_date_gpu_cost_cents(session, NOW) == 0
 
 
+def test_lost_pod_is_detected_and_lease_closed(session, caplog):
+    # Spot reclaim / pod crash mid-lease: depth stays > 0, the worker never answers, and
+    # the provider says the pod is gone. The lease must close as LOST (with an alert) so
+    # the next tick can boot a replacement — otherwise jobs are stranded forever, which
+    # breaks the "completes without manual action" criterion.
+    provider = _FakeGpuProvider()
+    _tick(session, provider, depth=2)
+    provider.pod_alive = False  # provider reclaimed the pod out-of-band
+
+    with caplog.at_level(logging.WARNING):
+        _tick(session, provider, now=NOW + timedelta(minutes=2), depth=2)
+
+    lease = session.exec(select(GpuLease)).one()
+    assert lease.status == GpuLeaseStatus.LOST
+    assert lease.ended_at is not None
+    assert lease.cost_cents == 2 * settings.gpu_pod_rate_cents_per_minute
+    assert any("gpu_pod_lost" in r.message for r in caplog.records)
+
+    # Recovery: the next tick reboots for the still-pending jobs.
+    _tick(session, provider, now=NOW + timedelta(minutes=3), depth=2)
+    assert provider.ensure_calls == 2
+    assert _active_lease(session) is not None
+
+
+def test_booting_pod_is_not_treated_as_lost(session):
+    # Right after boot the worker takes minutes to join the queue; as long as the
+    # provider still shows the pod, the loop must wait, not thrash boot/teardown.
+    provider = _FakeGpuProvider()
+    _tick(session, provider, depth=2)
+    _tick(session, provider, now=NOW + timedelta(minutes=2), depth=2)  # still booting
+    assert provider.ensure_calls == 1
+    lease = session.exec(select(GpuLease)).one()
+    assert lease.status == GpuLeaseStatus.ACTIVE
+
+
+def test_month_to_date_clamps_boundary_spanning_active_lease(session):
+    # An ACTIVE lease started before the month rollover must still accrue against this
+    # month's cap (from month start), not escape it entirely.
+    session.add(
+        GpuLease(
+            provider="runpod",
+            pod_id="pod-boundary",
+            status=GpuLeaseStatus.ACTIVE,
+            started_at=NOW - timedelta(days=40),
+        )
+    )
+    session.commit()
+    month_start = NOW.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    expected_minutes = int((NOW - month_start).total_seconds() // 60)
+    assert (
+        month_to_date_gpu_cost_cents(session, NOW)
+        == expected_minutes * settings.gpu_pod_rate_cents_per_minute
+    )
+
+
 def test_tick_never_raises_on_provider_failure(session, caplog):
     provider = _FakeGpuProvider()
     provider.fail_ensure = True

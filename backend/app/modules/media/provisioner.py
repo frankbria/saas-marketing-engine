@@ -76,7 +76,11 @@ class RunPodProvisioner:
         return PodState.RUNNING if pod.get("desiredStatus") == "RUNNING" else PodState.STARTING
 
     def teardown(self, pod_id: str) -> bool:
-        self._client.delete(f"/pods/{pod_id}").raise_for_status()
+        resp = self._client.delete(f"/pods/{pod_id}")
+        # 404 = the pod is already gone (spot loss / manual removal) — that IS the desired
+        # end state, not an error; raising here would strand the lease ACTIVE forever.
+        if resp.status_code != 404:
+            resp.raise_for_status()
         # Verify destruction — "pod destroyed, billing stopped" is the acceptance
         # criterion, and a provider that quietly kept the pod would bill forever.
         return self._client.get(f"/pods/{pod_id}").status_code == 404

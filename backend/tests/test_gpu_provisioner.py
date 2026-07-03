@@ -48,7 +48,10 @@ class _FakeRunPodApi:
                 pod = self.pods.get(pod_id)
                 return httpx.Response(200, json=pod) if pod else httpx.Response(404)
             if request.method == "DELETE":
-                self.pods.pop(pod_id, None)
+                # Real RunPod 404s a DELETE for a pod that no longer exists (spot loss).
+                if pod_id not in self.pods:
+                    return httpx.Response(404)
+                self.pods.pop(pod_id)
                 return httpx.Response(200, json={})
         return httpx.Response(404)
 
@@ -107,6 +110,13 @@ def test_teardown_verifies_destroyed(provider, fake_api):
     assert fake_api.pods == {}
     assert ("DELETE", f"/v1/pods/{pod_id}") in fake_api.requests
     assert ("GET", f"/v1/pods/{pod_id}") in fake_api.requests
+
+
+def test_teardown_of_already_gone_pod_is_verified_gone(provider, fake_api):
+    # Spot loss: the provider already removed the pod, so DELETE 404s. That IS the
+    # desired end state (nothing exists, nothing bills) — it must count as verified,
+    # not raise and strand the lease ACTIVE.
+    assert provider.teardown("pod-never-existed") is True
 
 
 def test_teardown_reports_unverified_when_pod_survives(provider, fake_api):

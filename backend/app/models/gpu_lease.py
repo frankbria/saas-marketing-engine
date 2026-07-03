@@ -16,6 +16,7 @@ class GpuLeaseStatus(StrEnum):
     ACTIVE = "active"
     ENDED = "ended"  # teardown verified at the provider — billing stopped
     TEARDOWN_UNVERIFIED = "teardown_unverified"  # DELETE accepted but pod still visible
+    LOST = "lost"  # provider reclaimed the pod out-of-band (spot loss/crash) mid-lease
 
 
 def _utcnow() -> datetime:
