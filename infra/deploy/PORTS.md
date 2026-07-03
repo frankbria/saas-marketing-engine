@@ -7,6 +7,14 @@ is a file (no port). Run `./check-ports.sh` on the host before starting services
 |------------------|-------|-----------------------|
 | FastAPI (uvicorn)| 8010  | firewalled / private  |
 | Next dashboard   | 3010  | firewalled / private  |
+| Flower (S5.0)    | 5555  | loopback / private    |
+
+Phase B (S5.0) reuses the VPS's existing localhost PostgreSQL 16 (`:5432`) and Redis
+(`:6379`) — reserved for this since v1 (below). Flower claims `:5555` for media-queue
+visibility, loopback-only like the dashboard. Local dev uses different host ports on
+purpose (postgres `5440`, redis `6390`, flower `5555`; see `infra/compose.dev.yml`).
+The ephemeral GPU worker binds nothing here — it runs at the provider and connects OUT
+to Redis (`infra/gpu-worker/README.md` for transport rules).
 
 ## Conflict check — Hostinger dev VPS (195.35.14.177)
 
