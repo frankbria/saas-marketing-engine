@@ -59,6 +59,16 @@ def test_retry_policy_matches_worker_max_attempts():
 
 
 @requires_redis
+def test_no_worker_means_offline_and_not_busy():
+    # The orchestrator's boot decision keys off these two observations; with no worker
+    # process on the broker both must be False (a True here would suppress provisioning).
+    from app.modules.media.queue import media_worker_busy, media_worker_online
+
+    assert media_worker_online(timeout=0.5) is False
+    assert media_worker_busy(timeout=0.5) is False
+
+
+@requires_redis
 def test_enqueue_increments_media_queue_depth():
     _drain_media_queue()
     probe.delay("depth-check")
