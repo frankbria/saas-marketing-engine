@@ -23,3 +23,12 @@ def media_worker_online(timeout: float = 1.0) -> bool:
     """True if any Celery worker consuming the media queue answers a ping."""
     replies = celery_app.control.ping(timeout=timeout) or []
     return len(replies) > 0
+
+
+def media_worker_busy(timeout: float = 1.0) -> bool:
+    """True if any worker has a task in flight. With acks_late + prefetch 1 an in-flight
+    job's message is already delivered (LLEN says 0), so depth alone would let the
+    orchestrator tear a pod down mid-job — this is the guard against that."""
+    inspect = celery_app.control.inspect(timeout=timeout)
+    active = inspect.active() or {}
+    return any(tasks for tasks in active.values())

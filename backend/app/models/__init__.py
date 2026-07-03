@@ -10,6 +10,7 @@ from app.models.channel import (
 from app.models.content_item import ContentItem, ContentItemStatus
 from app.models.credential import Credential
 from app.models.funnel_event import FunnelEvent, FunnelEventType
+from app.models.gpu_lease import GpuLease, GpuLeaseStatus
 from app.models.heartbeat_digest import HeartbeatDigest
 from app.models.job_run import JobRun, JobStatus
 from app.models.metric_event import MetricEvent, MetricStage
@@ -29,6 +30,8 @@ __all__ = [
     "Credential",
     "FunnelEvent",
     "FunnelEventType",
+    "GpuLease",
+    "GpuLeaseStatus",
     "HeartbeatDigest",
     "JobRun",
     "JobStatus",

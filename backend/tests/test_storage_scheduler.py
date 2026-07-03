@@ -20,6 +20,7 @@ from app.scheduler import (
     _crank_tick,
     _heartbeat,
     _heartbeat_digest_tick,
+    _media_provisioner_tick,
     _publish_tick,
     _worker_tick,
     create_scheduler,
@@ -175,7 +176,14 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
     # Built but not started — no background thread to tear down.
     scheduler = create_scheduler()
     jobs = {j.id: j for j in scheduler.get_jobs()}
-    assert set(jobs) == {"worker", "heartbeat", "crank", "publish", "heartbeat_digest"}
+    assert set(jobs) == {
+        "worker",
+        "heartbeat",
+        "crank",
+        "publish",
+        "heartbeat_digest",
+        "media_provisioner",
+    }
 
     # Pin each job's callable + interval, so a mis-wiring (wrong func/interval) fails the test.
     expected = {
@@ -190,15 +198,24 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
             _heartbeat_digest_tick,
             settings.heartbeat_digest_check_interval_seconds,
         ),
+        # S5.0: the ephemeral-GPU boot/teardown decision loop.
+        "media_provisioner": (
+            _media_provisioner_tick,
+            settings.media_provisioner_interval_seconds,
+        ),
     }
     for job_id, (func, interval) in expected.items():
         assert jobs[job_id].func is func
         assert jobs[job_id].trigger.interval == timedelta(seconds=interval)
 
 
-def test_no_queue_cluster_deps_in_v1():
+def test_phase_b_queue_deps_are_pinned():
+    # Until S5.0 (issue #28) this test *banned* celery/redis/psycopg — the v1 "no queue
+    # cluster" scope guard. Phase B deliberately reverses that decision (TECH_SPEC
+    # 2026-07-03): the deps now must exist, and stay ==-pinned like the rest of the stack
+    # (the GPU worker image is only reproducible against exact versions).
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
-    deps = " ".join(data["project"]["dependencies"]).lower()
-    for banned in ("celery", "redis", "psycopg", "postgres"):
-        assert banned not in deps, f"{banned} must be Phase B, not v1"
+    deps = {d.lower() for d in data["project"]["dependencies"]}
+    for required in ("celery[redis]==", "psycopg[binary]=="):
+        assert any(d.startswith(required) for d in deps), f"{required}<version> must be present"

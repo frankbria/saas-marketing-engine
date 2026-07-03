@@ -16,6 +16,7 @@ from app.db import engine
 from app.modules.crank.crank import enqueue_due_cranks
 from app.modules.crank.publish import pace_content, publish_scheduled
 from app.modules.heartbeat import run_heartbeat
+from app.modules.media.orchestrator import run_provisioner_tick
 from app.worker import enqueue, run_due_jobs
 
 
@@ -55,6 +56,14 @@ def _publish_tick() -> None:
         publish_scheduled(session, now)
 
 
+def _media_provisioner_tick() -> None:
+    # S5.0: ephemeral-GPU boot/teardown decision (issue #28). The tick's cold path (empty
+    # queue, no lease) touches neither Redis-provider nor API key, so it is safe to run
+    # everywhere; run_provisioner_tick never raises.
+    with Session(engine) as session:
+        run_provisioner_tick(session, datetime.now(UTC))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """Build (but don't start) the scheduler with the v1 interval jobs."""
     scheduler = BackgroundScheduler()
@@ -75,5 +84,11 @@ def create_scheduler() -> BackgroundScheduler:
         "interval",
         seconds=settings.heartbeat_digest_check_interval_seconds,
         id="heartbeat_digest",
+    )
+    scheduler.add_job(
+        _media_provisioner_tick,
+        "interval",
+        seconds=settings.media_provisioner_interval_seconds,
+        id="media_provisioner",
     )
     return scheduler
