@@ -1,99 +1,56 @@
-# S6.1 — Attributed funnel + revenue dashboard (issue #31)
+# Issue #33 — S6.3 Content calendar + spot-check queue
 
-**Plan source:** self-authored (no plan on issue). **Refs:** USER_STORIES S6.1, PRD FR-29, TECH_SPEC §6.6/§8.
-**Branch:** `feat/s6.1-attributed-funnel`
+**Plan source**: self-authored (no plan existed on the issue). Derived from USER_STORIES S6.3 (`USER_STORIES.md:198-201`), PRD FR-30/FR-27/FR-29, TECH_SPEC §content_item/§metric_event, and codebase exploration (backend, frontend, specs).
+**Branch:** `feature/issue-33-content-calendar-spot-check`
 
-## Current-state findings (Phase 2)
+## Acceptance criteria (from issue)
+- [ ] Calendar shows generated / critic-passed / published / retracted + performance
+- [ ] Spot-check items surfaced for async review
 
-- Funnel data is split across two tables: `metric_event` (impression, paid — cents in `value`) and
-  `funnel_event` (visit, lead/signup — the only table carrying UTM + `first_touch_token`).
-- The S2.5 webhook join stops at `product_id` (`api/public/stripe.py:98`) — `channel_id`/
-  `content_item_id` stay NULL on paid rows. Comment says attribution "fills in during P6" (= now).
-- Published bodies carry no UTM-tagged links; `publish.py:240` comment defers attribution to P6.
-  Precedent for publish-time body transforms exists (Reddit `_body_with_marker`).
-- `app/modules/metrics/` exists and is empty; private router registry comments a `metrics` router
-  comes later. No metrics read endpoint exists anywhere.
-- Dashboard: Next.js 16 App Router, sections under `app/products/[id]/`, typed client `lib/api.ts`
-  (`apiFetch` → `/api/private`), async server components with try/catch→empty-state, Vitest for
-  `lib/api.test.ts` only. No chart lib; convention is minimal Tailwind primitives.
-
-## Design decisions (autonomous — no architectural fork)
-
-1. **UTM convention:** published marketing-domain links get
-   `utm_source=<channel.type>&utm_medium=<content_type>&utm_campaign=<product.slug>&utm_content=sme-<content_item.id>`.
-   `sme-` prefix makes `utm_content` unambiguous to parse back.
-2. **Threading at publish time:** in `publish_scheduled`, rewrite marketing-domain URLs in
-   `item.body` before `adapter.publish`; persist the threaded body. Bodies without a site link are
-   left as-is (a post that never links to the product can't drive attributable visits).
-3. **Webhook-time join (spec §6.6 mandates it):** `_attribute_paid_metric` resolves
-   `lead.utm_content` → ContentItem (validated against product) → writes `channel_id` +
-   `content_item_id` on the paid MetricEvent. Fallback: `lead.utm_source` → channel type →
-   `channel_id` only.
-4. **Read endpoint:** `GET /api/private/metrics/{product_id}/funnel` → stage totals + per
-   channel/content attribution rows. Visits/signups attributed at query time from their own
-   UTM fields (funnel_event); impressions/paid from metric_event columns. Rollup logic in
-   `app/modules/metrics/funnel.py`.
-5. **Dashboard:** server-component section `app/products/[id]/funnel.tsx` (stage tiles + CSS bar +
-   attribution table, hand-rolled Tailwind, no chart dep), rendered from `products/[id]/page.tsx`.
+## Key design decisions (made autonomously — no architectural fork)
+1. **New endpoint** `GET /api/private/content/{product_id}/calendar` rather than widening `GET /content/{product_id}` — the existing endpoint's published+retracted contract is consumed by `published-content.tsx`; changing it risks breaking that view. Additive endpoint is safer.
+2. **Server-side metrics join**: the calendar endpoint embeds per-item performance (impressions/visits/signups/paid/revenue_cents) by reusing `funnel_rollup` (`app/modules/metrics/funnel.py`), joined on `content_item_id`. Keeps the dashboard "reads state, never heavy work" (TECH_SPEC:345) and gives one testable contract.
+3. **All statuses returned**, not just the four in the AC — the story's goal is "trust the crank is running"; hiding critic_failed/guard_failed/scheduled/publish_failed would undermine that. The four AC statuses get first-class badges.
+4. **No "mark reviewed" column** on spot-check items. TECH_SPEC's content_item model has no reviewed field; FR-27/S4.9 define review as optional/async and never-blocking. Adding an ack column is out of scope (YAGNI) — recorded as a Known Limitation in the PR.
+5. **Calendar UI = month grid, no new dependencies**: plain `Date` + Tailwind grid in a `"use client"` component with prev/next month nav. Date anchor per item: `published_at ?? scheduled_for ?? created_at`. Bucketing logic lives in `dashboard/lib/calendar.ts` (pure, unit-testable).
+6. **Placement**: new section `dashboard/app/products/[id]/content-calendar.tsx` rendered from the product detail page — matches every prior S-story section (funnel, spot-check queue, published-content). No new route.
+7. **Spot-check surfacing**: existing `spot-check-queue.tsx` section (S4.9) remains the review queue; calendar entries with `spot_check=true` additionally get a visible marker, tying AC(2) into the calendar view.
 
 ## Steps
 
-1. **UTM threading (backend)** — new `app/modules/metrics/utm.py` (build/thread/parse helpers),
-   edit `app/modules/crank/publish.py`. Tests first: `tests/test_utm_threading.py`.
-2. **Webhook join completion (backend)** — edit `app/api/public/stripe.py`
-   `_attribute_paid_metric`. Tests first: extend `tests/test_attribution.py`.
-3. **Funnel rollup endpoint (backend)** — new `app/modules/metrics/funnel.py`,
-   new `app/api/private/metrics.py`, register in `api/private/__init__.py`.
-   Tests first: `tests/test_metrics_api.py` (mimic `test_content_api.py` fixture pattern).
-4. **Dashboard funnel section (frontend)** — `lib/api.ts` types + `getFunnel(productId)`,
-   `lib/api.test.ts` block, `app/products/[id]/funnel.tsx`, wire into `page.tsx`.
-   Depends on step 3's response contract (fixed below, so it can run in parallel).
+### 1. Backend calendar endpoint (TDD)
+- Test file: `backend/tests/test_content_calendar_api.py` (mirror `test_content_api.py` fixtures: tmp SQLite + dependency override + TestClient)
+  - Returns items across ALL statuses (seed generated, critic_passed, published, retracted, critic_failed)
+  - Each item carries `id, channel_id, content_type, title, status, spot_check, critic_score, scheduled_for, published_at, created_at, external_url`
+  - Items with metric events get `metrics {impressions, visits, signups, paid, revenue_cents}`; items without get zeros/null
+  - 404 on unknown product; empty list on product with no content
+- Impl: `backend/app/api/private/content.py` — `GET /{product_id}/calendar`; reuse `funnel_rollup` for the metrics join. No schema change, no `_ADDITIVE_COLUMNS` entry needed.
 
-### Endpoint contract (steps 3↔4)
+### 2. Frontend API client (TDD)
+- Test: new `describe` block in `dashboard/lib/api.test.ts` mirroring the S6.1 `getFunnel` block (mock fetch, assert URL/shape)
+- Impl: `dashboard/lib/api.ts` — `CalendarItem` type + `getContentCalendar(productId)`
 
-```json
-GET /api/private/metrics/{product_id}/funnel
-{
-  "stages": {"impressions": 0, "visits": 0, "signups": 0, "paid": 0},
-  "revenue_cents": 0,
-  "rows": [
-    {"channel_id": 1, "channel_type": "reddit", "content_item_id": 7,
-     "title": "...", "external_url": "...",
-     "impressions": 0, "visits": 0, "signups": 0, "paid": 0, "revenue_cents": 0}
-  ]
-}
-```
-Unattributed visits/signups/paid roll into a row with `channel_id: null, content_item_id: null`.
-404 for unknown product. Per-product only (portfolio roll-up deferred, TECH_SPEC §14).
+### 3. Calendar bucketing helper (TDD)
+- Test: `dashboard/lib/calendar.test.ts` — month-grid generation (leading/trailing blanks, day buckets), date-anchor rule `published_at ?? scheduled_for ?? created_at`, month boundary/timezone-safe (UTC date parts)
+- Impl: `dashboard/lib/calendar.ts` — pure functions, no deps
 
-## Acceptance criteria
+### 4. Calendar UI section
+- New: `dashboard/app/products/[id]/content-calendar.tsx` — server wrapper fetches via `getContentCalendar`, degrades to empty on error (page.tsx pattern); client grid component with month nav (pattern: `qa-checklist.tsx` for client interactivity, `funnel.tsx` for tiles/tables)
+- Status badges for generated/critic_passed/published/retracted (+ muted badges for other statuses); spot-check marker on flagged items; per-item performance (impressions, revenue) shown compactly; `formatCents` pattern from `funnel.tsx`
+- Icons via `@hugeicons/react` only
 
-- [x] Per-product funnel: impressions → visits → signups → paid → revenue — demoed live
-  (seed → visit → lead → signed webhook → `GET /metrics/1/funnel` returned all stages +
-  revenue_cents 4900; dashboard section rendered the same data)
-- [x] Each conversion joinable to the channel/content item that drove it — demoed live
-  (threaded UTM link → funnel events carried `utm_content=sme-1` → paid row attributed to
-  the reddit channel + content item in the rollup)
-- [x] Portfolio roll-up deferred until >1 product — verified by absence (per-product
-  endpoint only)
+### 5. Wire into product page
+- `dashboard/app/products/[id]/page.tsx`: render `<ContentCalendar />` near `<SpotCheckQueue />` / `<Funnel />`
 
-## Post-review hardening
+### 6. Quality gates
+- Backend: `uv run pytest tests/test_content_calendar_api.py tests/test_content_api.py tests/test_spot_check.py tests/test_metrics_api.py` (targeted locally; full suite gates in CI)
+- Frontend: `npm test`, `npm run typecheck`, `npm run lint`
+- Deslop scan, internal review, demo (agent-browser walkthrough of both ACs), CI green, merge
 
-- Cross-family (codex) P2: funnel row hydration now re-checks `product_id` ownership on
-  channel/content lookups (no FK backs those ids) — fixed + regression test (`bf508db`).
-- Internal review + deslop scan: clean, no findings above threshold.
-- PR: https://github.com/frankbria/saas-marketing-engine/pull/69
+## Step dependencies
+- Steps 1 and 3 are independent. Step 2 depends on 1's contract (defined above, so parallelizable). Step 4 depends on 2+3. Step 5 depends on 4.
 
-## Test strategy
-
-- AC1: `test_metrics_api.py` seeds both tables, asserts stage totals + revenue sum.
-- AC2: `test_attribution.py` extension drives the full chain (threaded UTM → visit/lead with
-  `utm_content` → signed webhook → paid row carries channel/content ids); `test_metrics_api.py`
-  asserts rows group by content item. `test_utm_threading.py` covers link rewrite + parse.
-- AC3: deferral — verified by absence (no cross-product endpoint added).
-
-## Known limitations (→ PR)
-
-- `impressions` = publish events (value 1 per post), not real reach; reach collection is S6.2+.
-- Visits only fire from the landing page snippet; blog pages don't carry it yet.
-- Conversions whose lead lacks UTM stay product-attributed only (shown as unattributed row).
+## Assumptions (self-authored plan)
+- Per-item "performance" = the S6.1 attribution rollup (FR-29 chain), not heartbeat data (per-channel/day, wrong grain)
+- The S4.9 queue endpoint + section already satisfy the surfacing half of AC(2); S6.3 integrates rather than rebuilds it
+- No auth (v1 private interface); no pagination needed at v1 volumes
