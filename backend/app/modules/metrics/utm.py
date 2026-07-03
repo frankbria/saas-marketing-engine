@@ -83,7 +83,9 @@ def parse_utm_content(value: str | None) -> int | None:
     if value is None or not value.startswith(_UTM_CONTENT_PREFIX):
         return None
     tail = value[len(_UTM_CONTENT_PREFIX) :]
-    return int(tail) if tail.isdigit() else None
+    # isascii too: `"²".isdigit()` is True but `int("²")` raises, and utm_content is
+    # visitor-controlled — a crafted value must parse to None, not 500 the webhook.
+    return int(tail) if tail.isascii() and tail.isdigit() else None
 
 
 def resolve_attribution(

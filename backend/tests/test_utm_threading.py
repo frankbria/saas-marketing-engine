@@ -179,7 +179,9 @@ def test_parse_utm_content_round_trip(session):
     assert parse_utm_content(utm_params(p, c, it)["utm_content"]) == it.id
 
 
-@pytest.mark.parametrize("value", [None, "", "sme-", "sme-abc", "other-1"])
+# "sme-²": isdigit() is True but int() raises; "sme-١٢٣": non-ASCII digits int() would accept —
+# both are visitor-controlled input and must parse to None, not raise or resolve.
+@pytest.mark.parametrize("value", [None, "", "sme-", "sme-abc", "other-1", "sme-²", "sme-١٢٣"])
 def test_parse_utm_content_rejects_malformed(value):
     assert parse_utm_content(value) is None
 
