@@ -122,8 +122,14 @@ export interface QaChecklistItem {
 // S4.2/S4.7: a generated piece of content. The dashboard only surfaces published/retracted ones
 // (for the retract action); the full pipeline status set lives on the backend enum.
 export type ContentItemStatus =
-  | "generated" | "critic_passed" | "critic_failed" | "guard_failed"
-  | "scheduled" | "published" | "publish_failed" | "retracted"
+  | "generated"
+  | "critic_passed"
+  | "critic_failed"
+  | "guard_failed"
+  | "scheduled"
+  | "published"
+  | "publish_failed"
+  | "retracted"
 
 export interface ContentItem {
   id: number
@@ -138,6 +144,35 @@ export interface ContentItem {
   // S4.9: flagged for async human review (first item per channel + a random 10%). Never blocks publish.
   spot_check: boolean
   created_at: string
+}
+
+// S6.1: attributed funnel + revenue rollup (mirrors the backend funnel response). Stage totals
+// are product-wide; rows attribute each stage to the channel/content item that drove it (a null
+// channel_id/content_item_id row holds the unattributed remainder).
+export interface FunnelStages {
+  impressions: number
+  visits: number
+  signups: number
+  paid: number
+}
+
+export interface FunnelRow {
+  channel_id: number | null
+  channel_type: string | null
+  content_item_id: number | null
+  title: string | null
+  external_url: string | null
+  impressions: number
+  visits: number
+  signups: number
+  paid: number
+  revenue_cents: number
+}
+
+export interface Funnel {
+  stages: FunnelStages
+  revenue_cents: number
+  rows: FunnelRow[]
 }
 
 // PRAW script-app kwargs — the self-managed Reddit credential shape the engine stores under
@@ -312,7 +347,9 @@ export const runSmokeTest = (productId: number) =>
 
 // S2.8: emit the launch checklist from setup state. Requires a passed smoke test; advances to `qa`.
 export const emitLaunchChecklist = (productId: number) =>
-  apiFetch<LaunchChecklist>(`/qa/${productId}/launch-checklist`, { method: "POST" })
+  apiFetch<LaunchChecklist>(`/qa/${productId}/launch-checklist`, {
+    method: "POST",
+  })
 
 // S3.1: enqueue generation of the click-through QA checklist (202 + job id; rows appear once the
 // worker runs). Gated to `qa`.
@@ -340,3 +377,8 @@ export const setQaItemStatus = (
 // S3.2: cross qa → live. 409s unless every blocking item passes.
 export const goLive = (productId: number) =>
   apiFetch<Product>(`/qa/${productId}/go-live`, { method: "POST" })
+
+// S6.1: per-product attributed funnel (impressions → visits → signups → paid → revenue), grouped
+// by the channel/content item that drove each conversion. 404s for an unknown product.
+export const getFunnel = (productId: number) =>
+  apiFetch<Funnel>(`/metrics/${productId}/funnel`, { method: "GET" })

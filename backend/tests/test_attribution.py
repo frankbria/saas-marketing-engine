@@ -21,8 +21,9 @@ from app import config, workspace
 from app.api.public import ratelimit
 from app.db import get_session
 from app.main import create_app
-from app.models import MonetizationModel, Product
+from app.models import Channel, ChannelType, ContentItem, MonetizationModel, Product
 from app.models.metric_event import MetricEvent, MetricStage
+from app.modules.metrics.utm import utm_params
 
 SECRET = "whsec_testsecret"
 
@@ -52,17 +53,35 @@ def ctx(tmp_path, monkeypatch):
     yield app, engine
 
 
-def _make_product(engine) -> int:
+def _make_product(engine, *, name="Auto Author", slug="auto-author") -> int:
     with Session(engine) as s:
         product = Product(
-            name="Auto Author",
-            slug="auto-author",
+            name=name,
+            slug=slug,
             monetization_model=MonetizationModel.CC_SUB,
             marketing_domain="https://autoauthor.app",
         )
         s.add(product)
         s.commit()
         return product.id
+
+
+def _make_channel(engine, product_id: int, *, ctype=ChannelType.REDDIT) -> int:
+    with Session(engine) as s:
+        channel = Channel(product_id=product_id, type=ctype, enabled=True, autonomous=True)
+        s.add(channel)
+        s.commit()
+        return channel.id
+
+
+def _make_content_item(engine, product_id: int, channel_id: int, *, content_type="social") -> int:
+    with Session(engine) as s:
+        item = ContentItem(
+            product_id=product_id, channel_id=channel_id, content_type=content_type, body="Body"
+        )
+        s.add(item)
+        s.commit()
+        return item.id
 
 
 def _sign(payload: bytes, *, timestamp: int | None = None) -> str:
@@ -197,6 +216,112 @@ def test_non_paid_event_ignored(ctx):
 
     assert resp.status_code == 200
     assert _metrics(engine) == []
+
+
+def test_full_chain_resolves_channel_and_content_item(ctx):
+    """A lead whose utm_content is `sme-<item.id>` resolves the exact channel + content item that
+    drove it onto the paid metric (S6.1 join completion)."""
+    app, engine = ctx
+    product_id = _make_product(engine)
+    channel_id = _make_channel(engine, product_id)
+    item_id = _make_content_item(engine, product_id, channel_id)
+    token = "tok-content-1"
+
+    with Session(engine) as s:
+        product = s.get(Product, product_id)
+        channel = s.get(Channel, channel_id)
+        item = s.get(ContentItem, item_id)
+        utm_content = utm_params(product, channel, item)["utm_content"]
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/funnel/auto-author/lead",
+                json={
+                    "email": "buyer2@example.com",
+                    "first_touch_token": token,
+                    "utm_source": "reddit",
+                    "utm_content": utm_content,
+                },
+            ).status_code
+            == 201
+        )
+        resp = _post_webhook(
+            client, _completed_event(token=token, product_id=product_id, session_id="cs_test_2")
+        )
+
+    assert resp.status_code == 200
+    metric = _metrics(engine)[0]
+    assert metric.channel_id == channel_id
+    assert metric.content_item_id == item_id
+
+
+def test_utm_source_only_falls_back_to_channel_id(ctx):
+    """No content-item-resolving utm_content — utm_source alone still resolves channel_id, with
+    content_item_id left unset."""
+    app, engine = ctx
+    product_id = _make_product(engine)
+    channel_id = _make_channel(engine, product_id, ctype=ChannelType.REDDIT)
+    token = "tok-channel-only"
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/funnel/auto-author/lead",
+                json={
+                    "email": "buyer3@example.com",
+                    "first_touch_token": token,
+                    "utm_source": "reddit",
+                },
+            ).status_code
+            == 201
+        )
+        resp = _post_webhook(
+            client, _completed_event(token=token, product_id=product_id, session_id="cs_test_3")
+        )
+
+    assert resp.status_code == 200
+    metric = _metrics(engine)[0]
+    assert metric.channel_id == channel_id
+    assert metric.content_item_id is None
+
+
+def test_mismatched_product_utm_content_is_ignored(ctx):
+    """A utm_content pointing at another product's content item must not cross-attribute."""
+    app, engine = ctx
+    product_a_id = _make_product(engine, name="Auto Author", slug="auto-author")
+    product_b_id = _make_product(engine, name="Other App", slug="other-app")
+    channel_a_id = _make_channel(engine, product_a_id)
+    item_a_id = _make_content_item(engine, product_a_id, channel_a_id)
+    token = "tok-mismatch"
+
+    with Session(engine) as s:
+        product = s.get(Product, product_a_id)
+        channel = s.get(Channel, channel_a_id)
+        item = s.get(ContentItem, item_a_id)
+        utm_content = utm_params(product, channel, item)["utm_content"]
+
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/funnel/other-app/lead",
+                json={
+                    "email": "buyer4@example.com",
+                    "first_touch_token": token,
+                    "utm_content": utm_content,
+                },
+            ).status_code
+            == 201
+        )
+        resp = _post_webhook(
+            client, _completed_event(token=token, product_id=product_b_id, session_id="cs_test_4")
+        )
+
+    assert resp.status_code == 200
+    metric = _metrics(engine)[0]
+    assert metric.product_id == product_b_id
+    assert metric.channel_id is None
+    assert metric.content_item_id is None
 
 
 def test_source_unique_constraint_enforced(ctx):
