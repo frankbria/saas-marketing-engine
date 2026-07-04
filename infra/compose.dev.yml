@@ -1,0 +1,55 @@
+# Phase B control-plane services for local dev (S5.0, issue #28; TECH_SPEC §1 infra map).
+# Host ports are deliberately NON-default and loopback-bound so they can never collide with
+# the VPS's existing localhost postgres:5432 / redis:6379 (see deploy/PORTS.md) — and a dev
+# box that also runs native services stays usable. The ephemeral GPU worker is NOT here: it
+# runs at the provider from infra/gpu-worker and connects OUT to this Redis.
+#
+#   docker compose -f infra/compose.dev.yml up -d
+#
+# Backend env to match:
+#   SME_DATABASE_URL=postgresql+psycopg://sme:sme@localhost:5440/sme
+#   SME_CELERY_BROKER_URL=redis://localhost:6390/0
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sme
+      POSTGRES_PASSWORD: sme
+      POSTGRES_DB: sme
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sme"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:6390:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Queue visibility (S5.0 AC). Loopback-only — on the VPS this stays on the private
+  # interface like the dashboard; there is no auth in front of it.
+  flower:
+    image: mher/flower:2.0
+    command: celery --broker=redis://redis:6379/0 flower --port=5555
+    environment:
+      # Loopback-only + private interface on the VPS, same trust model as the dashboard
+      # (no auth in v1). Required for the HTTP API (flower 2.x defaults it off).
+      FLOWER_UNAUTHENTICATED_API: "true"
+    ports:
+      - "127.0.0.1:5555:5555"
+    depends_on:
+      - redis
+
+volumes:
+  pg_data:

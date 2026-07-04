@@ -1,10 +1,11 @@
-"""SQLModel engine + session on SQLite (WAL).
+"""SQLModel engine + session. SQLite (WAL) in v1; Postgres via `SME_DATABASE_URL` (Phase B).
 
 v1 storage per TECH_SPEC §4: a single SQLite file, WAL journal mode for concurrent
 reads alongside the in-process worker loop, and a busy_timeout so writers wait on the
 lock instead of erroring. No Alembic in v1 — `init_db()` bootstraps the schema via
-`SQLModel.metadata.create_all`. Postgres-ready: models stay vendor-neutral so Phase B
-can swap the engine URL.
+`SQLModel.metadata.create_all`. S5.0 exercised the Postgres path: `build_engine` keeps
+every SQLite-ism (connect_args, PRAGMAs, additive backfill) gated by dialect, so the
+URL swap is the whole migration (see infra/POSTGRES_MIGRATION.md for the data copy).
 """
 
 from collections.abc import Iterator
@@ -21,19 +22,19 @@ from app.config import settings
 # guarded ADD COLUMN. Nullable/defaulted only; existing rows take the default.
 # ponytail: explicit per-column list, not a generic reconciler — v1 has no migration tooling by
 # design (see module docstring). Add a line when a story adds a post-hoc column; reach for Alembic
-# only if this list gets long.
+# only if this list gets long. SQLite-only: the DDL strings are SQLite-typed, and a fresh Postgres
+# gets every column from create_all (a *pre-existing* Postgres needs Alembic — Phase B+).
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("content_item", "spot_check", "BOOLEAN NOT NULL DEFAULT 0"),  # S4.9
 )
 
-# check_same_thread=False: the APScheduler worker loop runs in a background thread.
-engine: Engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False},
-)
+
+def _connect_args(url: str) -> dict:
+    # check_same_thread is a sqlite3-only kwarg (the APScheduler worker loop runs in a
+    # background thread); psycopg rejects it at connect time.
+    return {"check_same_thread": False} if url.startswith("sqlite") else {}
 
 
-@event.listens_for(engine, "connect")
 def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
     """Enable WAL + a busy_timeout on every SQLite connection."""
     cursor = dbapi_connection.cursor()
@@ -43,9 +44,27 @@ def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
     cursor.close()
 
 
+def build_engine(url: str) -> Engine:
+    """An engine with the dialect-appropriate connection setup. PRAGMAs are attached only
+    to SQLite engines — on Postgres the statements would be syntax errors on connect.
+    pool_pre_ping guards the server-backed path: a scheduler that idles overnight must
+    not crash its first tick on a connection the server already closed (no-op cost on
+    SQLite's file handles)."""
+    eng = create_engine(url, connect_args=_connect_args(url), pool_pre_ping=True)
+    if eng.dialect.name == "sqlite":
+        event.listens_for(eng, "connect")(_set_sqlite_pragmas)
+    return eng
+
+
+engine: Engine = build_engine(settings.database_url)
+
+
 def _backfill_additive_columns(target: Engine) -> None:
     """Add post-hoc columns create_all() can't add to already-existing tables. Idempotent: skips a
-    column that already exists (e.g. on a fresh DB create_all just made it)."""
+    column that already exists (e.g. on a fresh DB create_all just made it). SQLite-only — see
+    _ADDITIVE_COLUMNS."""
+    if target.dialect.name != "sqlite":
+        return
     inspector = inspect(target)
     existing_tables = set(inspector.get_table_names())
     for table, column, ddl in _ADDITIVE_COLUMNS:

@@ -4,9 +4,10 @@
 # deploy scripts fail loudly instead of double-binding. See PORTS.md.
 set -euo pipefail
 
-PORTS=("${@:-8010 3010}")
 # Allow either `check-ports.sh` (defaults) or `check-ports.sh 8010 3010 ...`.
-[ "$#" -eq 0 ] && PORTS=(8010 3010)
+# 5555 = Flower (S5.0, loopback) — checked by default since Phase B.
+PORTS=("$@")
+[ "$#" -eq 0 ] && PORTS=(8010 3010 5555)
 
 fail=0
 for port in "${PORTS[@]}"; do

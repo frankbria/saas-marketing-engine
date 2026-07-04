@@ -1,0 +1,42 @@
+"""Broker-side introspection of the `media` queue (S5.0).
+
+The provisioner's boot/teardown decisions key off two observations: is work pending
+(queue depth) and is a worker alive (celery ping). Both talk to the real broker; the
+orchestrator takes them as injectable callables so its state machine tests stay
+deterministic without mocking Redis.
+"""
+
+from functools import lru_cache
+
+import redis
+
+from app.celery_app import MEDIA_QUEUE, celery_app
+from app.config import settings
+
+
+@lru_cache(maxsize=1)
+def _redis_client() -> redis.Redis:
+    # One shared client (and connection pool) per process — this helper runs on every
+    # provisioner tick; a fresh pool each call would leak sockets until GC.
+    return redis.Redis.from_url(settings.celery_broker_url)
+
+
+def media_queue_depth() -> int:
+    """Pending (undelivered) messages on the media queue. Celery's Redis transport keeps
+    a queue as a plain list keyed by queue name, so depth is just LLEN."""
+    return int(_redis_client().llen(MEDIA_QUEUE))
+
+
+def media_worker_online(timeout: float = 1.0) -> bool:
+    """True if any Celery worker consuming the media queue answers a ping."""
+    replies = celery_app.control.ping(timeout=timeout) or []
+    return len(replies) > 0
+
+
+def media_worker_busy(timeout: float = 1.0) -> bool:
+    """True if any worker has a task in flight. With acks_late + prefetch 1 an in-flight
+    job's message is already delivered (LLEN says 0), so depth alone would let the
+    orchestrator tear a pod down mid-job — this is the guard against that."""
+    inspect = celery_app.control.inspect(timeout=timeout)
+    active = inspect.active() or {}
+    return any(tasks for tasks in active.values())

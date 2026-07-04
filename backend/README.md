@@ -20,7 +20,9 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
 ### Storage + jobs (S0.2)
 
 - `db.py` — SQLModel engine on SQLite (WAL + `busy_timeout`); `init_db()` bootstraps the schema
-  (no Alembic in v1). Postgres swap-in is a Phase B change to `SME_DATABASE_URL`.
+  (no Alembic in v1). Postgres swap-in is a `SME_DATABASE_URL` change — every SQLite-ism is
+  dialect-gated (CI exercises the Postgres path); see `infra/POSTGRES_MIGRATION.md` for the
+  cutover procedure and when it's actually warranted.
 - `models/job_run.py` — `JobRun` audit row with an `attempts` retry column.
 - `worker.py` — in-process worker loop: `enqueue()` + `run_due_jobs()` (retries failures up to
   `MAX_ATTEMPTS`) + `reclaim_running_jobs()` (recovers jobs orphaned by a crash on startup).
@@ -201,6 +203,37 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   compact per-item performance. `app/products/[id]/content-calendar.tsx` fetches and wires it into
   the product page, degrading to an empty grid on fetch failure (same convention as **Funnel**).
 
-v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010` — see
+### Phase B media infra (S5.0)
+
+- `celery_app.py` — Celery app for the dedicated `media` queue only (long GPU video/podcast
+  jobs, S5.1/S5.2); the text/blog crank stays on the in-process worker loop. Broker/backend is
+  Redis (**`SME_CELERY_BROKER_URL`**); `task_routes` sends every `media.*` task to the `media`
+  queue; `acks_late` + prefetch 1 so a pod killed mid-job re-delivers instead of dropping.
+- `modules/media/tasks.py` — `media.probe` is the only v1 task, proving the enqueue → broker →
+  GPU-worker round-trip; real media tasks land here with the same `media.` prefix.
+- `modules/media/queue.py` — broker-side introspection (`media_queue_depth`, `media_worker_online`,
+  `media_worker_busy`) the orchestrator ticks off of.
+- `modules/media/provisioner.py` — `GpuProvisioner` protocol with one implementation (RunPod REST).
+  `build_provider()` reads **`SME_GPU_API_KEY`** (§9, never in the DB) and **`SME_GPU_POD_TEMPLATE_ID`**
+  (the registered `infra/gpu-worker` image). One provider, 0↔1 pods, adoption-by-name — no
+  multi-provider failover (issue #28 non-goal).
+- `modules/media/orchestrator.py` — `run_provisioner_tick` (APScheduler job in `scheduler.py`,
+  every **`SME_MEDIA_PROVISIONER_INTERVAL_SECONDS`**, default 60): boots a pod when `media` jobs
+  are pending and none is running (unless the monthly spend cap says no), tears it down after
+  **`SME_GPU_IDLE_TEARDOWN_MINUTES`** (default 10) idle, and reconciles a provider-side loss
+  (spot reclaim) into a closed `gpu_lease` row. Never raises — a provider outage alerts (§8.4)
+  instead of killing the scheduler.
+- `models/gpu_lease.py` — `GpuLease`: one row per pod rental (`active/ended/teardown_unverified/lost`),
+  the ledger **`SME_MEDIA_GPU_MONTHLY_CAP_CENTS`** (0=unlimited) sums over at
+  **`SME_GPU_POD_RATE_CENTS_PER_MINUTE`** to refuse provisioning past budget.
+- Local dev: `infra/compose.dev.yml` runs postgres/redis/flower on non-default loopback ports
+  (`docker compose -f infra/compose.dev.yml up -d`) — see `infra/deploy/PORTS.md` for the port
+  map and `infra/POSTGRES_MIGRATION.md` for the SQLite→Postgres cutover procedure (not required
+  in v1; SQLite/WAL stays primary until Celery worker count forces the swap). The GPU worker
+  image is built from `infra/gpu-worker/` (its README covers build/register/broker-transport) and
+  runs at the provider, not in this compose stack.
+
+v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010`, Flower `:5555` — see
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
-No Celery/Redis/Postgres in v1 (Phase B).
+Celery/Redis/Postgres are Phase B additions (S5.0), scoped to the `media` queue above — the
+text/blog crank and both APIs still run on the in-process worker loop + SQLite by default.
