@@ -15,6 +15,7 @@ from app.config import settings
 from app.db import engine
 from app.modules.crank.crank import enqueue_due_cranks
 from app.modules.crank.publish import pace_content, publish_scheduled
+from app.modules.crank.video_pipeline import advance_video_renders
 from app.modules.heartbeat import run_heartbeat
 from app.modules.media.orchestrator import run_provisioner_tick
 from app.worker import enqueue, run_due_jobs
@@ -64,6 +65,13 @@ def _media_provisioner_tick() -> None:
         run_provisioner_tick(session, datetime.now(UTC))
 
 
+def _video_render_tick() -> None:
+    # S5.1: dispatch/collect GPU renders for `rendering` items. advance_video_renders never
+    # raises, and its cold path (no rendering items) touches neither the broker nor the workspace.
+    with Session(engine) as session:
+        advance_video_renders(session, datetime.now(UTC))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """Build (but don't start) the scheduler with the v1 interval jobs."""
     scheduler = BackgroundScheduler()
@@ -90,5 +98,11 @@ def create_scheduler() -> BackgroundScheduler:
         "interval",
         seconds=settings.media_provisioner_interval_seconds,
         id="media_provisioner",
+    )
+    scheduler.add_job(
+        _video_render_tick,
+        "interval",
+        seconds=settings.video_render_tick_seconds,
+        id="video_render",
     )
     return scheduler

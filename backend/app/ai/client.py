@@ -44,6 +44,8 @@ GEN_BLOG_MAX_TOKENS = 4000  # output cap for one SEO blog article (also the rese
 CRITIC_MODEL = "claude-haiku-4-5"  # S4.3 critic — different tier than the generator (§8.2/FR-22)
 CRITIC_MAX_TOKENS = 600  # output cap for the critic verdict (also the budget-reservation ceiling)
 
+GEN_VIDEO_MAX_TOKENS = 2000  # output cap for one video script (S5.1; also the reservation ceiling)
+
 
 class ICP(BaseModel):
     segment: str
@@ -176,6 +178,24 @@ class BlogArticle(BaseModel):
     slug: str = Field(min_length=1)
     meta_description: str = Field(min_length=1)
     body: str = Field(min_length=1)  # markdown
+    pillar: str = Field(min_length=1)
+
+
+class VideoSegment(BaseModel):
+    """One scene of a short-form video (S5.1): the on-screen caption and its spoken narration.
+    The renderer times captions across the narration track; both are plain text (no markup)."""
+
+    caption: str = Field(min_length=1)  # on-screen text for this scene
+    narration: str = Field(min_length=1)  # what the TTS voice says over it
+
+
+class VideoScript(BaseModel):
+    """One short-form video script the generator returns (S5.1). `description` becomes the YouTube
+    description; `pillar` echoes the addressed content pillar like the other generators."""
+
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    segments: list[VideoSegment] = Field(min_length=1)
     pillar: str = Field(min_length=1)
 
 
@@ -598,6 +618,60 @@ def generate_blog_article(
         raise RuntimeError(f"blog generation returned nothing (stop_reason={response.stop_reason})")
     cost = cost_cents(GEN_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return article, cost
+
+
+def generate_video_script(
+    client: anthropic.Anthropic,
+    product_name: str,
+    brand_kit: BrandKit,
+    positioning: str,
+    content_pillars: list[str],
+    recent_items: list[str],
+) -> tuple[VideoScript, int]:
+    """Generate one short-form video script for a pillar (S5.1). Returns (script, cost).
+
+    Only the *script* is an LLM call — narration (TTS) and the render are provider/GPU steps in
+    the media pipeline (TECH_SPEC §10). The critic gates this text before any of those run."""
+    voice = (
+        "; ".join(f"{d.descriptor}: {d.guidance}" for d in brand_kit.voice_descriptors) or "(none)"
+    )
+    pillars = ", ".join(content_pillars) or "(none)"
+    user = (
+        f"Product: {product_name}\n"
+        f"Positioning: {positioning or '(none)'}\n"
+        f"Brand tone: {brand_kit.tone}\n"
+        f"Brand voice: {voice}\n"
+        f"Content pillars: {pillars}\n\n"
+        f"{_novelty_block(recent_items)}\n\n"
+        "Write ONE short-form vertical video script (30-60 seconds spoken) that advances the "
+        "product's marketing. Choose exactly one content pillar from the list and echo it as "
+        "`pillar`. Return a video title, a YouTube description, and 3-6 segments — each with a "
+        "short punchy on-screen caption and one or two spoken narration sentences. Keep it "
+        "on-brand, value-first, and idiomatic to short-form video."
+    )
+    response = client.messages.parse(
+        model=GEN_MODEL,
+        max_tokens=GEN_VIDEO_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a short-form video scriptwriter for a SaaS product. Write hook-first, "
+            "value-first scripts a real viewer would finish — never spammy or repetitive. Ground "
+            "every script in one of the given content pillars and echo which one."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=VideoScript,
+    )
+    # adaptive thinking may emit a thinking block first — scan for the text block with the object.
+    script = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if script is None:  # refusal or unparsable — surface, don't persist an empty item
+        raise RuntimeError(
+            f"video generation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(GEN_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return script, cost
 
 
 def critique_content(

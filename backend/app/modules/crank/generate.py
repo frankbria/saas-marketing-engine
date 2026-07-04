@@ -335,4 +335,11 @@ _CRITIQUE: CritiqueFn = _real_critique
 
 @handler("generate")
 def _generate_handler(job, session: Session) -> int:
+    if job.content_type == ContentType.VIDEO.value:
+        # S5.1: video splits across the Phase B execution planes (script/gates/TTS here, render on
+        # the `media` queue) — its own module. Lazy import: generate_video reuses this module's
+        # helpers, so a top-level import would be a cycle.
+        from app.modules.crank.generate_video import run_generate_video_job
+
+        return run_generate_video_job(job, session)
     return run_generate(job, session, generate=_GENERATE, critique=_CRITIQUE)

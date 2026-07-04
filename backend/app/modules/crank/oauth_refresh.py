@@ -74,7 +74,19 @@ class OAuthProvider:
 # refresh starts working for it). Blog has no OAuth and Reddit self-manages via PRAW, so neither is
 # listed. Full X/Instagram/YouTube live integrations remain out of scope (TECH_SPEC §7) — the
 # machinery is verified end-to-end in tests via an injected provider (`monkeypatch.setitem`).
-OWNED_TOKEN_PROVIDERS: dict[ChannelType, OAuthProvider] = {}
+OWNED_TOKEN_PROVIDERS: dict[ChannelType, OAuthProvider] = {
+    # S5.1: YouTube (Google OAuth) is the first live owned-token provider — we hold and refresh its
+    # bare access token. Google returns a refresh token only when the authorize URL carries
+    # `access_type=offline&prompt=consent` (see build_authorize_url caveat in the S5.1 report).
+    ChannelType.YOUTUBE: OAuthProvider(
+        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+        token_url="https://oauth2.googleapis.com/token",
+        scopes=(
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+        ),
+    ),
+}
 
 # Optional per-type token-endpoint overrides. The registry above is the single source of truth for a
 # provider's token URL (see `token_endpoint`); this dict only exists for edge providers registered
