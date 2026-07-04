@@ -290,3 +290,40 @@ text/blog crank and both APIs still run on the in-process worker loop + SQLite b
   added `spot_check` — no Alembic in v1.
 - `modules/crank/crank.py` — `ChannelType.YOUTUBE` now maps to `ContentType.VIDEO` in the fan-out
   table, and `AUTONOMOUS_TYPES` (`models/channel.py`) includes `YOUTUBE` alongside blog/Reddit.
+
+### Podcast/audio pipeline (S5.2)
+
+Mirrors S5.1 but **inverts the GPU default**: the podcast pipeline's expensive external step
+(ElevenLabs narration) is an API call on the VPS, not a GPU render, so a plain episode finalizes
+in-process and never touches the `media` queue — **an episode with no music bed costs zero GPU
+minutes**. Only an opt-in music bed rides the GPU pod.
+
+- `modules/crank/generate_podcast.py` — `run_generate_podcast` (the podcast cell of the `generate`
+  fan-out, `content_type=podcast`): LLM script (`generate_podcast_script`, structured `PodcastScript`
+  of title/description/segments/pillar + an optional `music_prompt`) → the same S4.3 critic+safety
+  and S4.4 guard on the script text (description + every heading/narration line) → on a pass,
+  ElevenLabs narrates the episode (reuses `SME_ELEVENLABS_API_KEY`/`SME_ELEVENLABS_VOICE_ID`).
+  Script + narration are checkpointed under `workspace/{slug}/media/podcast/job-{id}/` (resumable,
+  §8.3). The branch: a channel without `profile_json.music_bed` finalizes the narration as the
+  episode (`media_ref` → `narration.mp3`, `critic_passed`) **without any GPU dispatch**; a
+  `music_bed` channel persists `rendering` for the tick to mix a bed on the pod.
+- `modules/crank/podcast_pipeline.py` — `advance_podcast_renders`, the **`podcast_render`** scheduler
+  tick (every `SME_PODCAST_RENDER_TICK_SECONDS`, default 60) for the music-bed path only: dispatches
+  `media.render_audio` with the checkpointed narration + music prompt, collects the mixed MP3 into
+  `item.media_ref` + promotes to `critic_passed`, bounded re-dispatch (`SME_PODCAST_MAX_RENDER_DISPATCHES`,
+  default 3) → `render_failed`. The S5.1 `video_render` tick is now scoped to `content_type=video`
+  so the two planes (both use `rendering`) never touch each other's items.
+- `modules/media/audio.py` + `modules/media/tasks.py` — `media.render_audio`, a **pure** ffmpeg
+  duck/mix (narration over an ACE-Step bed, loudness-normalised, capped by
+  `SME_PODCAST_RENDER_MAX_BYTES`, default 100 MiB). The ACE-Step music-bed model is an injectable
+  seam that fails loudly until it's pinned into the GPU image (deferred infra) — the no-music path
+  needs it never.
+- `channels/podcast.py` — `PodcastAdapter`, an **owned** channel (no external credential, like the
+  blog): copies the episode MP3 into `site/podcast/`, writes an episode page + per-episode sidecar,
+  and (re)builds `feed.xml` (RSS 2.0 + iTunes tags) from all sidecars — filesystem-is-truth, so the
+  adapter needs no session and re-publish is idempotent. Served from the product's static site under
+  its `marketing_domain`.
+- `models/channel.py` / `modules/crank/crank.py` / `modules/setup/channels.py` / `ai/client.py` —
+  `ChannelType.PODCAST` (autonomous, owned) maps to `ContentType.PODCAST` in the fan-out, is wired
+  into onboarding channel-setup (`map_channel_type` + the `ChannelProfile` schema), and reuses the
+  existing `rendering`/`render_failed` statuses + `media_ref` column (no new migration).
