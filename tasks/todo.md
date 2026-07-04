@@ -1,84 +1,83 @@
-# Issue #29 — S5.1 Short-form video pipeline: Adapted Implementation Plan
+# S5.2 — Podcast/audio pipeline (issue #30)
 
-**Branch**: `feature/issue-29-short-form-video-pipeline` · **Plan source**: issue comment, adapted to codebase 2026-07-03
+**Branch:** `feature/issue-30-podcast-audio-pipeline` · **Plan source:** issue comment, adapted to codebase.
 
-## Architecture (as adapted)
+## Design (adapted from S5.1, one meaningful divergence)
 
-Two execution planes exist; video bridges them:
-- **VPS worker** = the in-process job loop (`app/worker.py`) + APScheduler ticks (`app/scheduler.py`). All CPU/API steps run here. (No default-queue Celery worker exists; S5.0 deliberately added only the GPU pod as a Celery consumer.)
-- **GPU plane** = Celery `media` queue consumed by the ephemeral RunPod worker (S5.0). Tasks named `media.*` auto-route there (`app/celery_app.py:35`).
+S5.1's expensive step (ffmpeg render) is GPU-bound → *every* video dispatches to the `media` queue.
+S5.2's expensive step (ElevenLabs TTS) is an **API call on the VPS** → a plain episode never needs
+the GPU pod. So the default inverts:
 
-Video flow:
-```
-crank fan-out (YOUTUBE→VIDEO) → job_run generate
-  → run_generate_video (in-process): LLM script+title → critic+safety gate → deterministic guard
-    → ElevenLabs TTS (httpx) → workspace checkpoints → ContentItem(status=RENDERING)
-    → dispatch media.render_video (Celery, media queue; pure fn: args in, MP4 bytes out)
-  → _video_render_tick (APScheduler): poll AsyncResult → write MP4 to workspace,
-    set media_ref, status=CRITIC_PASSED → existing pace→publish machinery
-  → publish pass → YouTubeAdapter (httpx, resumable upload, §8.3 idempotency) → external_url
-```
+- **No music bed (default):** generate → gates → TTS → the narration MP3 **is** the episode →
+  `media_ref` set + `CRITIC_PASSED`, entirely in-process on the VPS. **Never touches the `media`
+  queue → zero GPU minutes.** (Satisfies the headline AC.)
+- **Music bed (opt-in via channel `profile_json.music_bed=true`):** generate → gates → TTS →
+  checkpoint narration + `music_prompt` → `RENDERING`; the podcast render tick dispatches
+  `media.render_audio` (ACE-Step music gen + ffmpeg mix, on the GPU pod) → collect → `CRITIC_PASSED`.
+  Mirrors S5.1's dispatch/collect tick exactly.
 
-Key properties:
-- **Cold-start**: render task parks on the broker until the provisioner boots a pod (S5.0 machinery; `acks_late` + `task_reject_on_worker_lost` requeue on teardown).
-- **Resumability**: the GPU task is a pure function of its args (no DB/filesystem on the pod); all state lives VPS-side in workspace checkpoints + ContentItem. Re-runs overwrite artifacts idempotently (atomic temp+replace).
-- **No double-publish**: publish is a separate stage gated by status + §8.3 remote check (idempotency marker in video description, scanned before upload).
-- **Artifact transfer** pod→VPS via Celery result backend (base64 MP4, size-guarded). S5.0 left artifact return unsolved; this is the zero-new-infra default, seamed for object storage later.
+**ACE-Step** is deferred infra (Dockerfile comment). v1 ships the full plane + task + mix + an
+injectable `_generate_music` seam whose real impl fails loudly if the on-pod model is absent —
+exactly the `_real_tts` "raise when unconfigured" pattern. Tests fake the seam (per plan step 5).
 
-## Steps
+**Publish:** owned RSS feed on the nginx static site (plan's chosen v1 channel; no OAuth). New
+`ChannelType.PODCAST` (autonomous, owned infra like BLOG). `PodcastAdapter` copies the episode MP3
+into `site/podcast/`, writes a per-episode sidecar JSON, (re)builds `feed.xml` (RSS 2.0 + iTunes
+tags) from all sidecars in the dir — session-free, filesystem-is-truth like `BlogAdapter`.
+`external_url` = episode page.
 
-1. **Model + config seams**
-   - `app/models/content_item.py`: add nullable `media_ref: str | None` (workspace-relative path); add `RENDERING` + `RENDER_FAILED` to `ContentItemStatus`; add RENDER_FAILED to `_TERMINAL_FAILURE`.
-   - `app/config.py`: `elevenlabs_api_key: SecretStr|None`, `elevenlabs_voice_id`, `video_render_max_bytes`, `video_render_tick_seconds`, `video_max_render_dispatches`; register secret with vault; `.env.example` entries.
-   - Tests: model/status round-trip in the generate/render tests (no separate file).
+**No new content_item column / no migration:** reuse `RENDERING`/`RENDER_FAILED`, `media_ref`,
+`external_url`, `meta_json`. Calendar/spot-check are content_type-agnostic → no changes.
 
-2. **Video script generation (LLM)** — `app/ai/client.py`
-   - `generate_video_script(client, ...)` mirroring `generate_social_post` (client.py:506): `messages.parse` structured output → Pydantic `VideoScript{title, description, segments[{caption, narration}]}`; GEN_MODEL; cost via `cost_cents`.
-   - Tests: seam-injected, no network (existing pattern).
+## Steps (TDD — test first for each)
 
-3. **Video generator** — `app/modules/crank/generate_video.py`
-   - `run_generate_video(job, session, *, generate=, critique=, tts=, dispatch_render=)` (DI seams like generate.py:205): script → critic gate on script text (S4.3, regeneration loop reusing thresholds) → `check_content` guard (S4.4) → TTS per-segment narration via ElevenLabs httpx call → write `workspace/{slug}/media/video/{job}/` checkpoints (script.json, narration.mp3; each step skips if output exists) → create ContentItem(content_type=video, body=script text, status=RENDERING, meta=render task id) → dispatch `media.render_video`.
-   - `app/modules/crank/generate.py`: route content_type==video to it from the `generate` handler.
-   - `app/modules/crank/crank.py`: `_CHANNEL_CONTENT_TYPES[ChannelType.YOUTUBE] = (ContentType.VIDEO,)`.
-   - `app/models/channel.py`: add YOUTUBE to `AUTONOMOUS_TYPES`.
-   - Tests (`tests/test_generate_video.py`): produces video item; critic-fail → CRITIC_FAILED + no dispatch; guard-fail → GUARD_FAILED; TTS via `httpx.MockTransport` fake ElevenLabs; re-run skips existing checkpoints (idempotent); budget/kill-switch parity with text path.
+1. **AI schema + generator** (`app/ai/client.py`): `PodcastScript` (title, description, segments,
+   pillar, `music_prompt: str | None`), `generate_podcast_script(...)`, `GEN_PODCAST_MAX_TOKENS`.
+   Tests: parse path + refusal path.
+2. **Config** (`app/config.py` + `.env.example`): `podcast_render_max_bytes`,
+   `podcast_render_tick_seconds`, `podcast_max_render_dispatches` (mirror `video_*`). Reuse
+   `elevenlabs_*`. Bounded `Field(ge=...)`.
+3. **Channel type** (`app/models/channel.py`): `ChannelType.PODCAST`, add to `AUTONOMOUS_TYPES`.
+   (`app/modules/crank/crank.py`): `_CHANNEL_CONTENT_TYPES[PODCAST] = (ContentType.PODCAST,)`.
+4. **Generate handler** (`app/modules/crank/generate_podcast.py`): mirror `generate_video.py` —
+   `run_generate_podcast(job, session, *, generate=, critique=, tts=, sample=)`, gate loop,
+   checkpoint (`script.json`, `narration.mp3`), music-toggle branch (RENDERING vs finalize),
+   `run_generate_podcast_job` wrapper + `_GENERATE/_CRITIQUE/_TTS` seams. Route in
+   `generate.py:_generate_handler` (add PODCAST branch, lazy import).
+   Tests (`tests/test_generate_podcast.py`): no-music finalizes to CRITIC_PASSED with poisoned
+   dispatch never called; music path → RENDERING; gate-fail → no GPU, no workspace; TTS httpx
+   monkeypatch (URL/headers/body) + absent-key raise; resume-from-checkpoint.
+5. **Pure audio render** (`app/modules/media/audio.py`): `render_audio(narration_b64, music_prompt,
+   *, max_bytes) -> str` — `_generate_music` seam (real impl invokes on-pod ACE-Step, raises loudly
+   if absent) → ffmpeg mix (narration over ducked bed, normalize, `-map_metadata -1`) → size-check →
+   b64 MP3. Pure: no DB/broker/settings.
+   Tests (`tests/test_podcast_render.py`): real ffmpeg mix with a faked `_generate_music`
+   (skips if ffmpeg absent, no-mock policy); empty/oversized raise.
+6. **Media task** (`app/modules/media/tasks.py`): register `media.render_audio` (thin lazy wrapper
+   → pure `render_audio`, `max_bytes` arg).
+7. **Render tick** (`app/modules/crank/podcast_pipeline.py`): `advance_podcast_renders(session, now,
+   *, send=, poll=)` mirroring `video_pipeline.py` (dispatch/poll/collect, bounded re-dispatch,
+   never-raise). Wire `_podcast_render_tick` into `app/scheduler.py`.
+   Tests (`tests/test_media_podcast_queue.py`): dispatch/collect via injected send/poll; bounded
+   re-dispatch → RENDER_FAILED; real Redis+worker cold-start (`@requires_redis`/`@requires_ffmpeg`)
+   proving parked→booted→collected.
+8. **Publish adapter** (`app/channels/podcast.py`): `PodcastAdapter` (type=PODCAST,
+   credential_key=None) publish → copy MP3 + sidecar + rebuild feed.xml; delete → remove pair +
+   rebuild. Register in `app/channels/base.py:get_adapter`.
+   Tests (`tests/test_podcast_adapter.py`): publish writes mp3+feed.xml with the episode enclosure;
+   re-publish idempotent; delete prunes + rebuilds; feed is well-formed XML with required tags.
+9. **Zero-GPU integration proof** (`tests/test_gpu_orchestrator.py` or podcast queue test): a
+   no-music episode run asserts `provider.ensure_calls == 0` (cold path never builds a provider).
 
-4. **Render task (GPU plane)** — `app/modules/media/video.py` + `tasks.py`
-   - `render_video(script: dict, narration_b64: str, spec) -> bytes`: pure ffmpeg subprocess composition — caption slides (drawtext) timed to narration, mux to MP4. No DB, no workspace.
-   - `media.render_video` task in `app/modules/media/tasks.py` following `media.probe` template (acks_late, max_retries=MAX_ATTEMPTS-1, retry_backoff).
-   - `infra/gpu-worker/Dockerfile`: add `fonts-dejavu-core`.
-   - Tests (`tests/test_video_render.py`): tiny real render (skip if ffmpeg absent); determinism/purity; size guard.
+## Acceptance criteria (from issue #30)
+- [ ] `podcast` generator (ElevenLabs/ACE-Step) producing `content_item(content_type=podcast)`
+- [ ] Gated (critic+safety+guard) + published; long jobs resumable across teardown (idempotent §8.3)
+- [ ] GPU-bound ACE-Step on the `media` queue survives provisioner cold-start; API-bound ElevenLabs
+      on the VPS worker; **an episode with no music bed requires zero GPU minutes**
 
-5. **Render-complete tick** — `app/modules/crank/video_pipeline.py` + `app/scheduler.py`
-   - `advance_video_renders(session, now)`: for RENDERING items — poll AsyncResult by stored task id; ready → decode, size-check, atomic-write MP4 to workspace, set `media_ref`, status=CRITIC_PASSED; failed/lost → bounded re-dispatch (meta counter, max from settings) else RENDER_FAILED + error. Never raises (tick contract).
-   - Register `_video_render_tick` in scheduler like `_media_provisioner_tick`.
-   - Tests: injected result-getter seam; success/failure/re-dispatch-bound paths.
-
-6. **YouTube adapter** — `app/channels/youtube.py`
-   - Follows reddit.py shape: `credential_key="youtube_oauth"`, lazy httpx client seam `_build_youtube(creds)`, `_is_transient`/`_is_auth_failure` (5xx/timeouts → Retryable, 401 → AuthFailure, 403 quota → Retryable).
-   - `publish`: fail closed on missing idempotency_key/media_ref; §8.3 remote check — list own recent uploads, match `sme-ref:{key}` marker in description → return existing URL; else resumable upload (init → PUT chunks) of workspace file, title/description from item, marker appended; return `watch?v=` URL.
-   - `delete`: parse video id from external_url, `videos.delete`, already-gone = no-op.
-   - Register in `get_adapter` (base.py); add YOUTUBE `OAuthProvider` to `OWNED_TOKEN_PROVIDERS` (oauth_refresh.py) — token URL `https://oauth2.googleapis.com/token`, upload+readonly scopes; verify client auth style (body, not Basic) for Google.
-   - **Direct httpx, no google-api-python-client** — matches repo test pattern and the issue's "stub YouTube server" test plan.
-   - Tests (`tests/test_youtube_adapter.py`): stub YouTube via `httpx.MockTransport` — happy path, idempotent re-publish (no second upload), transient→Retryable, 401→AuthFailure→fence, missing key/file fails closed, retract, resumable-upload chunk resume.
-
-7. **Integration: media queue cold-start + pipeline** — `tests/test_media_video_queue.py`
-   - Copy `test_media_queue.py:82` pattern: enqueue `media.render_video` with no worker → `media_queue_depth()==1` → `start_worker(queues=[media])` → result completes (requires_redis + ffmpeg-skip).
-   - Full generate→gate→render-tick→pace→publish flow against stub YouTube (real SQLite, seams at HTTP boundaries only).
-
-## Acceptance criteria → test map
-
-- [ ] `video` generator produces `content_item(content_type=video)` → step 3 tests
-- [ ] Passes critic+safety (S4.3) + deterministic guard (S4.4) → step 3 gate tests
-- [ ] Publishes via YouTube Data API; long jobs retry without blocking → step 6 tests + Retryable-keeps-scheduled publish-pass test
-- [ ] GPU steps on `media` queue survive cold-start → step 7 cold-start test + routing assertion
-- [ ] Resumable/idempotent across teardown; re-run never double-publishes (§8.3) → step 3 checkpoint-skip tests, step 5 re-dispatch test, step 6 idempotency test
-- [ ] CPU/API steps on VPS worker; only GPU-bound steps rent compute → design + routing test (only `media.render_video` dispatched to Celery)
-
-## Deviations from the issue plan (autonomous decisions)
-
-1. **Renderer = ffmpeg caption-composition** (subprocess, pure fn) instead of manim/Remotion/video-podcast-maker — the gpu-worker image already ships ffmpeg; heavier renderers slot into the same seamed `media.render_video` task later (matches the S5.0 `media.probe` plumbing-first philosophy and TECH_SPEC §10 subprocess pattern). Render routed to the media queue per the issue's own plan, though the v1 impl is CPU-feasible — it's the step that becomes GPU-bound with real renderers.
-2. **YouTube via direct httpx** (no google SDK) — resumable upload protocol is plain HTTP; matches `httpx.MockTransport` testing and keeps pinned deps minimal.
-3. **Artifact return via Celery result backend** (base64, size-guarded) — no new storage service; noted as Known Limitation.
-4. **CPU steps on the in-process worker + APScheduler tick**, not a default-queue Celery worker (none exists; adding one would duplicate execution planes).
-5. New `RENDERING`/`RENDER_FAILED` statuses (additive str-enum values, no migration) keep unfinished videos out of pacing; render completion promotes to `CRITIC_PASSED` so pace/publish stay untouched.
+## Known limitations (for PR)
+- ACE-Step on-pod model invocation is a loud-fail seam; installing the model in the GPU image is
+  deferred infra (Dockerfile already notes S5.2 will pin it). The no-GPU path is fully functional.
+- Episode audio rides back through the Redis result backend base64-encoded, capped by
+  `podcast_render_max_bytes` (same v1 transfer limit as video; object store swaps in behind send/poll).
+- RSS is the owned v1 channel; podcast-directory submissions (Apple/Spotify) are a human checklist.

@@ -35,12 +35,13 @@ class ContentType(StrEnum):
 
 
 # Content types each autonomous channel produces (TECH_SPEC §7/§8.2). Phase A: blog + reddit;
-# S5.1 (Phase B) adds youtube→video. podcast (S5.2) and the remaining human-assisted channels
-# (x/instagram) are intentionally absent.
+# S5.1 (Phase B) adds youtube→video, S5.2 adds podcast→podcast. The remaining human-assisted
+# channels (x/instagram) are intentionally absent.
 _CHANNEL_CONTENT_TYPES: dict[ChannelType, tuple[ContentType, ...]] = {
     ChannelType.BLOG: (ContentType.BLOG,),
     ChannelType.REDDIT: (ContentType.SOCIAL,),
     ChannelType.YOUTUBE: (ContentType.VIDEO,),
+    ChannelType.PODCAST: (ContentType.PODCAST,),
 }
 
 

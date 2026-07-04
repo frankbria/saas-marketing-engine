@@ -113,7 +113,19 @@ def test_map_channel_type_known_names():
     assert map_channel_type("X (Twitter)") == ChannelType.X
     assert map_channel_type("YouTube") == ChannelType.YOUTUBE
     assert map_channel_type("Instagram") == ChannelType.INSTAGRAM
+    # S5.2: a brief naming podcast must create a podcast channel, or the whole pipeline is
+    # unreachable through onboarding (the crank fan-out only emits for channels that exist).
+    assert map_channel_type("Podcast") == ChannelType.PODCAST
     assert map_channel_type("carrier pigeon") is None
+
+
+def test_channel_profile_schema_accepts_podcast():
+    # The onboarding profile-generation call parses into ChannelProfile; its `type` Literal must
+    # allow podcast or setup_product_channels raises on a brief that requests one.
+    from app.ai.client import ChannelProfile
+
+    prof = ChannelProfile(type="podcast", handle="acme_pod", bio="b", profile_copy="c")
+    assert prof.type == "podcast"
 
 
 def test_channel_types_from_brief_ordered_and_deduped(session):

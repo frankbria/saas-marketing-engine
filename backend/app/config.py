@@ -147,6 +147,20 @@ class Settings(BaseSettings):
     # (`render_failed`). ge=1: zero would strand every item in `rendering` forever.
     video_max_render_dispatches: int = Field(default=3, ge=1)
 
+    # S5.2 podcast pipeline. ElevenLabs narrates the episode (CPU/API step on the VPS, reuses the
+    # elevenlabs_* settings above); an *optional* ACE-Step music bed is the only GPU step, so a
+    # narration-only episode never rides the `media` queue. These mirror the video_* render knobs
+    # and apply only when a music bed is requested (the sole path that dispatches to the GPU pod).
+    # ~100 MiB default fits a multi-minute mixed episode; ge=1 like video (zero would reject every
+    # mix, silently killing the music-bed path).
+    podcast_render_max_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
+    # How often the scheduler collects finished audio mixes back into the workspace. ge=5 like the
+    # video tick — sub-second polling would just hammer the result backend.
+    podcast_render_tick_seconds: int = Field(default=60, ge=5)
+    # How many times a lost/failed audio mix is re-dispatched before the item fails terminal
+    # (`render_failed`). ge=1: zero would strand every music-bed episode in `rendering` forever.
+    podcast_max_render_dispatches: int = Field(default=3, ge=1)
+
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.
     rate_limit_requests: int = 60

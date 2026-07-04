@@ -46,6 +46,10 @@ CRITIC_MAX_TOKENS = 600  # output cap for the critic verdict (also the budget-re
 
 GEN_VIDEO_MAX_TOKENS = 2000  # output cap for one video script (S5.1; also the reservation ceiling)
 
+# A podcast episode is longer-form than a short video (multi-minute narration), so it needs a
+# roomier output cap — sized like the blog article generator (S5.2; also the reservation ceiling).
+GEN_PODCAST_MAX_TOKENS = 4000
+
 
 class ICP(BaseModel):
     segment: str
@@ -118,7 +122,7 @@ class ChannelProfile(BaseModel):
     `type` echoes the requested channel so a list response can be matched back to the right row.
     The warm-up note is added deterministically downstream (not the model's job)."""
 
-    type: Literal["blog", "reddit", "x", "instagram", "youtube"]
+    type: Literal["blog", "reddit", "x", "instagram", "youtube", "podcast"]
     handle: str  # suggested account handle/username
     bio: str  # short profile bio
     profile_copy: str  # longer "about" / profile description
@@ -197,6 +201,29 @@ class VideoScript(BaseModel):
     description: str = Field(min_length=1)
     segments: list[VideoSegment] = Field(min_length=1)
     pillar: str = Field(min_length=1)
+
+
+class PodcastSegment(BaseModel):
+    """One spoken section of a podcast episode (S5.2): a show-notes heading and the narration read
+    aloud. Segments are concatenated in order into one continuous narration track; both are plain
+    text (no markup)."""
+
+    heading: str = Field(min_length=1)  # show-notes heading for this section
+    narration: str = Field(min_length=1)  # what the TTS voice reads for this section
+
+
+class PodcastScript(BaseModel):
+    """One podcast episode script the generator returns (S5.2). `description` becomes the RSS
+    episode description / show notes; `pillar` echoes the addressed content pillar like the other
+    generators. `music_prompt` is an optional one-line brief for an ACE-Step music bed — it is only
+    acted on when the channel opts into a music bed; otherwise the episode is narration-only and
+    never touches the GPU plane (an episode with no bed costs zero GPU minutes)."""
+
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    segments: list[PodcastSegment] = Field(min_length=1)
+    pillar: str = Field(min_length=1)
+    music_prompt: str | None = None
 
 
 class CriticVerdict(BaseModel):
@@ -669,6 +696,62 @@ def generate_video_script(
     if script is None:  # refusal or unparsable — surface, don't persist an empty item
         raise RuntimeError(
             f"video generation returned nothing (stop_reason={response.stop_reason})"
+        )
+    cost = cost_cents(GEN_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+    return script, cost
+
+
+def generate_podcast_script(
+    client: anthropic.Anthropic,
+    product_name: str,
+    brand_kit: BrandKit,
+    positioning: str,
+    content_pillars: list[str],
+    recent_items: list[str],
+) -> tuple[PodcastScript, int]:
+    """Generate one podcast episode script for a pillar (S5.2). Returns (script, cost).
+
+    Only the *script* is an LLM call — narration (ElevenLabs TTS, a VPS/API step) and any music bed
+    (ACE-Step, a GPU step) come later in the media pipeline (TECH_SPEC §10). The critic gates this
+    text before either runs, so a rejected episode never spends TTS or GPU time."""
+    voice = (
+        "; ".join(f"{d.descriptor}: {d.guidance}" for d in brand_kit.voice_descriptors) or "(none)"
+    )
+    pillars = ", ".join(content_pillars) or "(none)"
+    user = (
+        f"Product: {product_name}\n"
+        f"Positioning: {positioning or '(none)'}\n"
+        f"Brand tone: {brand_kit.tone}\n"
+        f"Brand voice: {voice}\n"
+        f"Content pillars: {pillars}\n\n"
+        f"{_novelty_block(recent_items)}\n\n"
+        "Write ONE short podcast episode script (2-5 minutes spoken) that advances the product's "
+        "marketing. Choose exactly one content pillar from the list and echo it as `pillar`. "
+        "Return an episode title, an episode description (the RSS show notes), and 3-6 segments — "
+        "each with a short show-notes heading and a few sentences of spoken narration. Optionally "
+        "suggest a one-line `music_prompt` describing a fitting background music bed (or leave it "
+        "null). Keep it on-brand, value-first, and natural to listen to."
+    )
+    response = client.messages.parse(
+        model=GEN_MODEL,
+        max_tokens=GEN_PODCAST_MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        system=(
+            "You are a podcast scriptwriter for a SaaS product. Write conversational, value-first "
+            "episodes a real listener would finish — never spammy or repetitive. Ground every "
+            "episode in one of the given content pillars and echo which one."
+        ),
+        messages=[{"role": "user", "content": user}],
+        output_format=PodcastScript,
+    )
+    # adaptive thinking may emit a thinking block first — scan for the text block with the object.
+    script = next(
+        (b.parsed_output for b in response.content if b.type == "text" and b.parsed_output),
+        None,
+    )
+    if script is None:  # refusal or unparsable — surface, don't persist an empty item
+        raise RuntimeError(
+            f"podcast generation returned nothing (stop_reason={response.stop_reason})"
         )
     cost = cost_cents(GEN_MODEL, response.usage.input_tokens, response.usage.output_tokens)
     return script, cost

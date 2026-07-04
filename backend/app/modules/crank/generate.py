@@ -342,4 +342,11 @@ def _generate_handler(job, session: Session) -> int:
         from app.modules.crank.generate_video import run_generate_video_job
 
         return run_generate_video_job(job, session)
+    if job.content_type == ContentType.PODCAST.value:
+        # S5.2: podcast narrates on the VPS (ElevenLabs) and finishes in-process unless a music bed
+        # is requested, in which case the ACE-Step mix rides the `media` queue. Same lazy-import
+        # reason as video (it reuses this module's helpers).
+        from app.modules.crank.generate_podcast import run_generate_podcast_job
+
+        return run_generate_podcast_job(job, session)
     return run_generate(job, session, generate=_GENERATE, critique=_CRITIQUE)

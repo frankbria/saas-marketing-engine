@@ -19,6 +19,7 @@ class ChannelType(StrEnum):
     X = "x"
     INSTAGRAM = "instagram"
     YOUTUBE = "youtube"
+    PODCAST = "podcast"  # S5.2: owned RSS feed on the product's static site (no external creds)
 
 
 class ConnectState(StrEnum):
@@ -29,7 +30,11 @@ class ConnectState(StrEnum):
 
 # v1: only these post autonomously; the rest are enabled but human-assisted (Revision 0.2).
 # S5.1 makes YOUTUBE autonomous — the short-form video pipeline uploads rendered MP4s end-to-end.
-AUTONOMOUS_TYPES = frozenset({ChannelType.BLOG, ChannelType.REDDIT, ChannelType.YOUTUBE})
+# S5.2 makes PODCAST autonomous — episodes publish to an owned RSS feed on the product's static
+# site (like the owned blog: no external credential, no ToS risk).
+AUTONOMOUS_TYPES = frozenset(
+    {ChannelType.BLOG, ChannelType.REDDIT, ChannelType.YOUTUBE, ChannelType.PODCAST}
+)
 
 # Providers whose stored credential is a structured self-managed blob (the provider's own client
 # refreshes access tokens under the hood) rather than a bare access token we hold and refresh.

@@ -55,6 +55,7 @@ _TYPE_KEYWORDS: tuple[tuple[str, ChannelType], ...] = (
     ("youtube", ChannelType.YOUTUBE),
     ("instagram", ChannelType.INSTAGRAM),
     ("twitter", ChannelType.X),
+    ("podcast", ChannelType.PODCAST),  # S5.2: owned RSS feed, autonomous like blog
     ("blog", ChannelType.BLOG),
     ("seo", ChannelType.BLOG),
 )
