@@ -422,11 +422,30 @@ def test_tick_leaves_pending_render_alone(session, workspace):
     assert json.loads(item.meta_json)["render"]["dispatches"] == 1  # no double-dispatch
 
 
-# --- wiring: crank fan-out + scheduler (AC6) ------------------------------------------------------
+# --- wiring: crank fan-out + worker routing + scheduler (AC6) -------------------------------------
 
 
 def test_crank_fans_out_video_for_youtube():
     assert _CHANNEL_CONTENT_TYPES[ChannelType.YOUTUBE] == (ContentType.VIDEO,)
+
+
+def test_worker_routes_video_job_through_video_generator(session, workspace, monkeypatch):
+    # The full worker path: an enqueued video job must reach run_generate_video via the
+    # `generate` handler's routing (not the text path, which would reject content_type=video).
+    from app.modules.crank import generate_video as gv
+    from app.worker import run_due_jobs
+
+    p, c, job = _setup(session)
+    monkeypatch.setattr(gv, "_GENERATE", _stub_generate())
+    monkeypatch.setattr(gv, "_CRITIQUE", _pass_critique)
+    monkeypatch.setattr(gv, "_TTS", _stub_tts())
+    session.commit()
+
+    run_due_jobs(session)
+
+    item = session.exec(select(ContentItem)).one()
+    assert item.content_type == ContentType.VIDEO.value
+    assert item.status == ContentItemStatus.RENDERING
 
 
 def test_scheduler_registers_video_render_tick():
@@ -434,3 +453,72 @@ def test_scheduler_registers_video_render_tick():
 
     scheduler = create_scheduler()
     assert scheduler.get_job("video_render") is not None
+
+
+def test_video_render_tick_advances_renders(monkeypatch):
+    # The tick body itself: proves the scheduler job actually drives advance_video_renders
+    # (a registered-but-inert job would strand every rendering item).
+    import app.scheduler as sched
+
+    calls = []
+    monkeypatch.setattr(sched, "advance_video_renders", lambda s, now: calls.append(now))
+    sched._video_render_tick()
+    assert len(calls) == 1
+
+
+# --- the real TTS boundary (faked provider HTTP, per the issue's test plan) ----------------------
+
+
+def test_real_tts_posts_script_narration_to_elevenlabs(monkeypatch):
+    from pydantic import SecretStr
+
+    from app.modules.crank.generate_video import _real_tts
+
+    monkeypatch.setattr(settings, "elevenlabs_api_key", SecretStr("el-key"))
+    monkeypatch.setattr(settings, "elevenlabs_voice_id", "voice-1")
+    seen = {}
+
+    def fake_post(url, *, headers, json, timeout):
+        seen.update(url=url, headers=headers, json=json)
+
+        class _Resp:
+            content = b"AUDIO"
+
+            def raise_for_status(self):
+                return None
+
+        return _Resp()
+
+    monkeypatch.setattr("app.modules.crank.generate_video.httpx.post", fake_post)
+    audio = _real_tts(_script())
+
+    assert audio == b"AUDIO"
+    assert "voice-1" in seen["url"]
+    assert seen["headers"]["xi-api-key"] == "el-key"
+    # The narration is the segments' spoken lines, in order — captions never reach the voice.
+    assert seen["json"]["text"] == "This is Acme. Acme ships for you."
+
+
+def test_real_tts_fails_loudly_without_key(monkeypatch):
+    from app.modules.crank.generate_video import _real_tts
+
+    monkeypatch.setattr(settings, "elevenlabs_api_key", None)
+    with pytest.raises(RuntimeError, match="ELEVENLABS"):
+        _real_tts(_script())
+
+
+# --- integration (real API, key-gated) ------------------------------------------------------------
+
+
+@pytest.mark.skipif(settings.anthropic_api_key is None, reason="requires SME_ANTHROPIC_API_KEY")
+def test_integration_real_video_script(session, workspace):
+    # Real generate_video_script + critic against the API (mirrors test_generate.py's key-gated
+    # test); TTS stays stubbed — ElevenLabs spend isn't justified for a schema check.
+    p, _c, job = _setup(session)
+    cost = run_generate_video(job, session, tts=_stub_tts())
+    session.commit()
+
+    item = session.exec(select(ContentItem)).one()
+    assert item.title and item.body
+    assert json.loads(item.meta_json)["pillar"]
+    assert cost > 0

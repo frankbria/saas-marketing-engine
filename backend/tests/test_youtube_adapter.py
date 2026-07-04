@@ -175,6 +175,19 @@ def _install_transport_error(monkeypatch):
     )
 
 
+def test_build_youtube_sets_bearer_auth():
+    # The real (un-monkeypatched) client factory: the bare owned token must ride as a Bearer
+    # header on every call — it's the only authentication the adapter ever sends.
+    from app.channels.youtube import _build_youtube
+
+    client = _build_youtube("tok-123")
+    try:
+        assert client.headers["Authorization"] == "Bearer tok-123"
+        assert client.headers["Accept"] == "application/json"
+    finally:
+        client.close()
+
+
 # --- publish: happy path + idempotency ---------------------------------------------------------
 
 
