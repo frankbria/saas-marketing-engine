@@ -56,10 +56,12 @@ def get_adapter(channel_type: ChannelType) -> ChannelAdapter:
     # Imported here (not at module top) so importing the contract never drags in praw.
     from app.channels.blog import BlogAdapter
     from app.channels.reddit import RedditAdapter
+    from app.channels.youtube import YouTubeAdapter
 
     adapters: dict[ChannelType, ChannelAdapter] = {
         ChannelType.BLOG: BlogAdapter(),
         ChannelType.REDDIT: RedditAdapter(),
+        ChannelType.YOUTUBE: YouTubeAdapter(),
     }
     adapter = adapters.get(channel_type)
     if adapter is None:

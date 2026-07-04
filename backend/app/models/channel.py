@@ -28,7 +28,8 @@ class ConnectState(StrEnum):
 
 
 # v1: only these post autonomously; the rest are enabled but human-assisted (Revision 0.2).
-AUTONOMOUS_TYPES = frozenset({ChannelType.BLOG, ChannelType.REDDIT})
+# S5.1 makes YOUTUBE autonomous — the short-form video pipeline uploads rendered MP4s end-to-end.
+AUTONOMOUS_TYPES = frozenset({ChannelType.BLOG, ChannelType.REDDIT, ChannelType.YOUTUBE})
 
 # Providers whose stored credential is a structured self-managed blob (the provider's own client
 # refreshes access tokens under the hood) rather than a bare access token we hold and refresh.

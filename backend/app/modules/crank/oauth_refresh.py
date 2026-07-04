@@ -67,6 +67,10 @@ class OAuthProvider:
     authorize_url: str
     token_url: str
     scopes: tuple[str, ...] = ()
+    # Extra provider-specific authorize-time query params (tuple-of-pairs: the dataclass is
+    # frozen/hashable). e.g. Google needs access_type=offline&prompt=consent or it never returns
+    # a refresh token. Core params (state, client_id, …) always win over an entry here.
+    authorize_params: tuple[tuple[str, str], ...] = ()
 
 
 # Owned-token OAuth providers, keyed by ChannelType. Add an entry per provider as it goes live; that
@@ -77,7 +81,7 @@ class OAuthProvider:
 OWNED_TOKEN_PROVIDERS: dict[ChannelType, OAuthProvider] = {
     # S5.1: YouTube (Google OAuth) is the first live owned-token provider — we hold and refresh its
     # bare access token. Google returns a refresh token only when the authorize URL carries
-    # `access_type=offline&prompt=consent` (see build_authorize_url caveat in the S5.1 report).
+    # `access_type=offline&prompt=consent`, so they ride the registry entry.
     ChannelType.YOUTUBE: OAuthProvider(
         authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
         token_url="https://oauth2.googleapis.com/token",
@@ -85,6 +89,7 @@ OWNED_TOKEN_PROVIDERS: dict[ChannelType, OAuthProvider] = {
             "https://www.googleapis.com/auth/youtube.upload",
             "https://www.googleapis.com/auth/youtube.readonly",
         ),
+        authorize_params=(("access_type", "offline"), ("prompt", "consent")),
     ),
 }
 
@@ -214,9 +219,11 @@ def build_authorize_url(
     provider: OAuthProvider, client_id: str, redirect_uri: str, state: str
 ) -> str:
     """Provider consent URL for the redirect leg. Scopes are space-joined per RFC 6749; `state` is
-    the signed anti-CSRF token minted below."""
+    the signed anti-CSRF token minted below. Provider extras (`authorize_params`, e.g. Google's
+    access_type=offline) merge first so the core protocol params can never be overridden."""
     query = urllib.parse.urlencode(
         {
+            **dict(provider.authorize_params),
             "response_type": "code",
             "client_id": client_id,
             "redirect_uri": redirect_uri,

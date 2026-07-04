@@ -56,8 +56,11 @@ def test_channel_type_unique_per_product(session):
     session.commit()
 
 
-def test_autonomous_types_are_blog_and_reddit():
-    assert AUTONOMOUS_TYPES == frozenset({ChannelType.BLOG, ChannelType.REDDIT})
+def test_autonomous_types_are_blog_reddit_and_youtube():
+    # S5.1 promotes YouTube from human-assisted to autonomous (the video pipeline publishes it).
+    assert AUTONOMOUS_TYPES == frozenset(
+        {ChannelType.BLOG, ChannelType.REDDIT, ChannelType.YOUTUBE}
+    )
 
 
 def test_setup_checklist_item_defaults(session):
