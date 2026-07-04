@@ -32,6 +32,22 @@ def test_backfill_adds_missing_column_to_existing_table(tmp_path):
         assert conn.execute(text("SELECT spot_check FROM content_item")).scalar() == 0
 
 
+def test_backfill_adds_media_ref_to_existing_table(tmp_path):
+    # S5.1 regression: an older DB predating the video pipeline must gain the nullable
+    # media_ref column, or every ContentItem query fails with `no such column`.
+    db = tmp_path / "old.db"
+    engine = create_engine(f"sqlite:///{db}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE content_item (id INTEGER PRIMARY KEY, body TEXT)"))
+        conn.execute(text("INSERT INTO content_item (body) VALUES ('pre-existing row')"))
+
+    _backfill_additive_columns(engine)
+
+    assert "media_ref" in _columns(engine, "content_item")
+    with engine.begin() as conn:  # existing text rows are NULL — no media, no crash
+        assert conn.execute(text("SELECT media_ref FROM content_item")).scalar() is None
+
+
 def test_backfill_is_idempotent_and_noop_when_column_present(tmp_path):
     db = tmp_path / "cur.db"
     engine = create_engine(f"sqlite:///{db}")
