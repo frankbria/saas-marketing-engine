@@ -118,3 +118,38 @@ def test_unknown_gpu_provider_fails_at_startup(monkeypatch):
     monkeypatch.setenv("SME_GPU_PROVIDER", "aws")
     with pytest.raises(ValueError, match="gpu_provider"):
         Settings()
+
+
+def test_video_pipeline_defaults():
+    # S5.1: ElevenLabs TTS key is a secret (None until set — TTS then fails loudly), and the
+    # render transfer guard / tick cadence / re-dispatch bound carry sane bounded defaults.
+    s = Settings()
+    assert s.elevenlabs_api_key is None
+    assert s.elevenlabs_voice_id  # non-empty default voice
+    assert s.video_render_max_bytes > 0
+    assert s.video_render_tick_seconds >= 5
+    assert s.video_max_render_dispatches >= 1
+
+
+def test_elevenlabs_api_key_is_secret(monkeypatch):
+    # §9: provider keys must never leak via Settings repr/model_dump.
+    monkeypatch.setenv("SME_ELEVENLABS_API_KEY", "el-secret-123")
+    s = Settings()
+    assert isinstance(s.elevenlabs_api_key, SecretStr)
+    assert "el-secret-123" not in repr(s)
+    assert s.elevenlabs_api_key.get_secret_value() == "el-secret-123"
+
+
+@pytest.mark.parametrize(
+    ("env", "value"),
+    [
+        ("SME_VIDEO_RENDER_MAX_BYTES", "0"),  # 0 would reject every render, silently killing video
+        ("SME_VIDEO_RENDER_TICK_SECONDS", "0"),
+        ("SME_VIDEO_MAX_RENDER_DISPATCHES", "0"),  # 0 would strand every item in `rendering`
+    ],
+)
+def test_video_pipeline_settings_bounded(monkeypatch, env, value):
+    # An out-of-range deploy value must fail at startup, not misbehave silently at runtime.
+    monkeypatch.setenv(env, value)
+    with pytest.raises(ValueError):
+        Settings()
