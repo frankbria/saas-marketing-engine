@@ -96,8 +96,9 @@ def _is_quota(resp: httpx.Response) -> bool:
 
 def _raise_for_status(resp: httpx.Response, action: str) -> None:
     """Classify a non-2xx YouTube response, mirroring reddit.py's split: 5xx → Retryable; 401 →
-    AuthFailure (dead owned token); 403 → Retryable only on a quota/rate-limit reason, else
-    permanent; other 4xx → permanent RuntimeError with a status + body snippet."""
+    AuthFailure (dead owned token); 429 → Retryable (upload/rate throttling is always temporary);
+    403 → Retryable only on a quota/rate-limit reason, else permanent; other 4xx → permanent
+    RuntimeError with a status + body snippet."""
     if resp.is_success:
         return
     status = resp.status_code
@@ -106,6 +107,8 @@ def _raise_for_status(resp: httpx.Response, action: str) -> None:
         raise Retryable(f"youtube {action} failed: {status} {snippet}")
     if status == 401:
         raise AuthFailure(f"youtube {action} auth failed: {status} {snippet}")
+    if status == 429:
+        raise Retryable(f"youtube {action} rate-limited: {status} {snippet}")
     if status == 403 and _is_quota(resp):
         raise Retryable(f"youtube {action} rate-limited: {status} {snippet}")
     raise RuntimeError(f"youtube {action} failed: {status} {snippet}")

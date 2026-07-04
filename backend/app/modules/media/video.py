@@ -31,6 +31,14 @@ _FONT_CANDIDATES = (
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
 )
 
+# Hard bounds on the subprocess calls: the worker runs --concurrency=1, so a hung ffmpeg/ffprobe
+# would wedge the whole pod — and a busy-looking worker is never torn down by the provisioner,
+# turning one bad encode into unbounded paid GPU time. TimeoutExpired propagates like any other
+# failure (Celery autoretry → bounded by the tick's dispatch cap). 10 min covers a slow software
+# encode of a short-form clip with a wide margin.
+_PROBE_TIMEOUT_SECONDS = 60
+_RENDER_TIMEOUT_SECONDS = 600
+
 
 def _find_font() -> str:
     for path in _FONT_CANDIDATES:
@@ -57,6 +65,7 @@ def _probe_duration(mp3_path: str) -> float:
         ],
         capture_output=True,
         text=True,
+        timeout=_PROBE_TIMEOUT_SECONDS,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise RuntimeError(f"ffprobe could not read narration: {proc.stderr.strip()[-500:]}")
@@ -150,7 +159,7 @@ def render_video(
             "-1",
             out_path,
         ]
-        proc = subprocess.run(cmd, capture_output=True)
+        proc = subprocess.run(cmd, capture_output=True, timeout=_RENDER_TIMEOUT_SECONDS)
         if proc.returncode != 0:
             raise RuntimeError(
                 f"ffmpeg render failed (code {proc.returncode}): "

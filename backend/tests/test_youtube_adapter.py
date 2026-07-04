@@ -324,6 +324,16 @@ def test_publish_401_is_auth_failure(video_item, monkeypatch):
         YouTubeAdapter().publish(video_item.item, video_item.product, video_item.channel, "tok")
 
 
+def test_publish_429_is_retryable(video_item, monkeypatch):
+    # YouTube throttles uploads with 429 (uploadRateLimitExceeded) — always temporary, so it
+    # must stay `scheduled` and retry next tick, never flip to publish_failed.
+    api = _FakeYouTubeApi(scan_status=429, error_reason="uploadRateLimitExceeded")
+    _install(monkeypatch, api)
+
+    with pytest.raises(Retryable):
+        YouTubeAdapter().publish(video_item.item, video_item.product, video_item.channel, "tok")
+
+
 def test_publish_403_quota_is_retryable(video_item, monkeypatch):
     api = _FakeYouTubeApi(scan_status=403, error_reason="quotaExceeded")
     _install(monkeypatch, api)
