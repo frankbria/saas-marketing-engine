@@ -1,76 +1,84 @@
-# S5.0 — Phase B infrastructure (issue #28)
+# Issue #29 — S5.1 Short-form video pipeline: Adapted Implementation Plan
 
-Adapted implementation plan (source: issue comment by frankbria, adapted 2026-07-03 after codebase exploration).
+**Branch**: `feature/issue-29-short-form-video-pipeline` · **Plan source**: issue comment, adapted to codebase 2026-07-03
+
+## Architecture (as adapted)
+
+Two execution planes exist; video bridges them:
+- **VPS worker** = the in-process job loop (`app/worker.py`) + APScheduler ticks (`app/scheduler.py`). All CPU/API steps run here. (No default-queue Celery worker exists; S5.0 deliberately added only the GPU pod as a Celery consumer.)
+- **GPU plane** = Celery `media` queue consumed by the ephemeral RunPod worker (S5.0). Tasks named `media.*` auto-route there (`app/celery_app.py:35`).
+
+Video flow:
+```
+crank fan-out (YOUTUBE→VIDEO) → job_run generate
+  → run_generate_video (in-process): LLM script+title → critic+safety gate → deterministic guard
+    → ElevenLabs TTS (httpx) → workspace checkpoints → ContentItem(status=RENDERING)
+    → dispatch media.render_video (Celery, media queue; pure fn: args in, MP4 bytes out)
+  → _video_render_tick (APScheduler): poll AsyncResult → write MP4 to workspace,
+    set media_ref, status=CRITIC_PASSED → existing pace→publish machinery
+  → publish pass → YouTubeAdapter (httpx, resumable upload, §8.3 idempotency) → external_url
+```
+
+Key properties:
+- **Cold-start**: render task parks on the broker until the provisioner boots a pod (S5.0 machinery; `acks_late` + `task_reject_on_worker_lost` requeue on teardown).
+- **Resumability**: the GPU task is a pure function of its args (no DB/filesystem on the pod); all state lives VPS-side in workspace checkpoints + ContentItem. Re-runs overwrite artifacts idempotently (atomic temp+replace).
+- **No double-publish**: publish is a separate stage gated by status + §8.3 remote check (idempotency marker in video description, scanned before upload).
+- **Artifact transfer** pod→VPS via Celery result backend (base64 MP4, size-guarded). S5.0 left artifact return unsolved; this is the zero-new-infra default, seamed for object storage later.
 
 ## Steps
 
-### 1. Config + dependency foundation
-- `backend/pyproject.toml`: add `celery[redis]`, `redis`, `psycopg[binary]` (Postgres driver).
-- `backend/app/config.py` (SME_ prefix, typed fields w/ bounds per existing pattern):
-  - `celery_broker_url` (default `redis://localhost:6379/0`)
-  - `gpu_api_key: SecretStr | None` (already present in `.env` as `SME_GPU_API_KEY`)
-  - `gpu_provider` (default `"runpod"`), `gpu_pod_template_id` / image ref settings
-  - `gpu_idle_teardown_minutes` (default 10, ge=1)
-  - `media_gpu_monthly_cap_cents` (default 0 = unlimited, per repo convention)
-  - `gpu_pod_rate_cents_per_minute` (for spend estimation)
-  - `media_provisioner_interval_seconds`
-- Register `gpu_api_key` with `install_redaction()` so it is scrubbed from logs.
-- Update `backend/.env.example`.
-- Tests: config defaults + bounds.
+1. **Model + config seams**
+   - `app/models/content_item.py`: add nullable `media_ref: str | None` (workspace-relative path); add `RENDERING` + `RENDER_FAILED` to `ContentItemStatus`; add RENDER_FAILED to `_TERMINAL_FAILURE`.
+   - `app/config.py`: `elevenlabs_api_key: SecretStr|None`, `elevenlabs_voice_id`, `video_render_max_bytes`, `video_render_tick_seconds`, `video_max_render_dispatches`; register secret with vault; `.env.example` entries.
+   - Tests: model/status round-trip in the generate/render tests (no separate file).
 
-### 2. Celery app + `media` queue
-- `backend/app/celery_app.py`: Celery instance, broker from settings, `task_routes` → `media` queue, `task_acks_late=True`, retry policy (max 3, matching worker.py MAX_ATTEMPTS).
-- `backend/app/modules/media/__init__.py` + `tasks.py`: a `media.probe` no-op media task (real video/podcast generation is S5.1/S5.2).
-- Queue-depth helper (redis LLEN on the media queue) for the orchestration loop.
-- Tests (`tests/test_media_queue.py`): routing unit tests; integration with **real Redis** (CI services block; local compose) — enqueue → depth increments → celery test worker on `-Q media` consumes → depth drains. Skipif Redis unreachable locally (mirrors skipif-on-missing-env idiom); CI always runs it.
+2. **Video script generation (LLM)** — `app/ai/client.py`
+   - `generate_video_script(client, ...)` mirroring `generate_social_post` (client.py:506): `messages.parse` structured output → Pydantic `VideoScript{title, description, segments[{caption, narration}]}`; GEN_MODEL; cost via `cost_cents`.
+   - Tests: seam-injected, no network (existing pattern).
 
-### 3. GPU provisioner interface + RunPod implementation
-- `backend/app/modules/media/provisioner.py`:
-  - `GpuProvisioner` Protocol: `ensure_worker()`, `teardown()`, `status()`.
-  - `RunPodProvisioner`: httpx against RunPod REST (create pod from pinned template/image, poll ready, terminate pod; verify destroyed).
-  - `_build_provider()` factory seam (test idiom: hand-written fake injected via monkeypatch, like `_build_reddit`).
-- API key read from settings only — never persisted to DB.
-- Tests (`tests/test_gpu_provisioner.py`): `_FakeGpuProvider` recording calls; state transitions deterministic via injected clock.
+3. **Video generator** — `app/modules/crank/generate_video.py`
+   - `run_generate_video(job, session, *, generate=, critique=, tts=, dispatch_render=)` (DI seams like generate.py:205): script → critic gate on script text (S4.3, regeneration loop reusing thresholds) → `check_content` guard (S4.4) → TTS per-segment narration via ElevenLabs httpx call → write `workspace/{slug}/media/video/{job}/` checkpoints (script.json, narration.mp3; each step skips if output exists) → create ContentItem(content_type=video, body=script text, status=RENDERING, meta=render task id) → dispatch `media.render_video`.
+   - `app/modules/crank/generate.py`: route content_type==video to it from the `generate` handler.
+   - `app/modules/crank/crank.py`: `_CHANNEL_CONTENT_TYPES[ChannelType.YOUTUBE] = (ContentType.VIDEO,)`.
+   - `app/models/channel.py`: add YOUTUBE to `AUTONOMOUS_TYPES`.
+   - Tests (`tests/test_generate_video.py`): produces video item; critic-fail → CRITIC_FAILED + no dispatch; guard-fail → GUARD_FAILED; TTS via `httpx.MockTransport` fake ElevenLabs; re-run skips existing checkpoints (idempotent); budget/kill-switch parity with text path.
 
-### 4. Orchestration loop + spend guardrails + lease ledger
-- `backend/app/models/gpu_lease.py`: `GpuLease(table=True)` — provider, pod_id, status, started_at, ended_at, cost_cents. Serves as observability record **and** pod-minutes ledger for the monthly cap.
-- `backend/app/modules/media/orchestrator.py`: `run_provisioner_tick(session, provider, now)`:
-  - depth > 0 and no live worker and under cap → `ensure_worker()`, open lease
-  - depth == 0 and worker idle > `gpu_idle_teardown_minutes` → `teardown()`, close lease (verified destroyed = billing stopped)
-  - `month_to_date_gpu_cost_cents(session, now)` pre-check; cap breach → refuse provisioning + `raise_alert("gpu_spend_cap", ...)` (S6.2 path)
-  - tick must never raise out (heartbeat pattern)
-- `backend/app/scheduler.py`: register `_media_provisioner_tick` interval job.
-- `backend/app/main.py`: import media module (registration side-effect pattern, main.py L13-21).
-- Tests (`tests/test_gpu_orchestrator.py`): boot-on-pending; no double-boot while live; idle teardown at fixed `NOW` + timedelta; cap refusal + alert via caplog; **cold-start end-to-end**: job enqueued with no worker → tick boots fake provider → job completes → idle → teardown fires (the AC integration test).
+4. **Render task (GPU plane)** — `app/modules/media/video.py` + `tasks.py`
+   - `render_video(script: dict, narration_b64: str, spec) -> bytes`: pure ffmpeg subprocess composition — caption slides (drawtext) timed to narration, mux to MP4. No DB, no workspace.
+   - `media.render_video` task in `app/modules/media/tasks.py` following `media.probe` template (acks_late, max_retries=MAX_ATTEMPTS-1, retry_backoff).
+   - `infra/gpu-worker/Dockerfile`: add `fonts-dejavu-core`.
+   - Tests (`tests/test_video_render.py`): tiny real render (skip if ffmpeg absent); determinism/purity; size guard.
 
-### 5. Postgres migration path
-- `backend/app/db.py`: guard SQLite PRAGMA listener by dialect (`sqlite` only); gate `_backfill_additive_columns` to SQLite (fresh Postgres gets columns from `create_all`).
-- `.github/workflows/ci.yml`: add `services:` block (postgres:16, redis:7); export `SME_TEST_POSTGRES_URL` + broker URL; suite exercises both.
-- Tests (`tests/test_postgres_path.py`): skipif no `SME_TEST_POSTGRES_URL` — engine boot, `init_db()`, JobRun enqueue/claim round-trip, additive-backfill no-op, pragma listener not applied.
-- Docs: `infra/POSTGRES_MIGRATION.md` — SQLite → Postgres data copy procedure.
+5. **Render-complete tick** — `app/modules/crank/video_pipeline.py` + `app/scheduler.py`
+   - `advance_video_renders(session, now)`: for RENDERING items — poll AsyncResult by stored task id; ready → decode, size-check, atomic-write MP4 to workspace, set `media_ref`, status=CRITIC_PASSED; failed/lost → bounded re-dispatch (meta counter, max from settings) else RENDER_FAILED + error. Never raises (tick contract).
+   - Register `_video_render_tick` in scheduler like `_media_provisioner_tick`.
+   - Tests: injected result-getter seam; success/failure/re-dispatch-bound paths.
 
-### 6. Infra: compose, GPU worker image, ports
-- `infra/compose.dev.yml` (canonical path per TECH_SPEC L99-101): redis (host port 6390), postgres (host port 5440), flower (5555, private interface). Non-default host ports avoid VPS collisions (VPS already has pg:5432/redis:6379 localhost-only).
-- `infra/gpu-worker/Dockerfile` (first Dockerfile in repo): pinned `python:3.13-slim` + ffmpeg, installs backend + celery, `CMD celery -A app.celery_app worker -Q media --concurrency=1`. Connects OUT to VPS Redis (authenticated; transport = Tailscale, already on the VPS, or password+TLS — documented alongside, no raw internet Redis).
-- `infra/deploy/PORTS.md` + `check-ports.sh`: claim 5555/6390/5440.
+6. **YouTube adapter** — `app/channels/youtube.py`
+   - Follows reddit.py shape: `credential_key="youtube_oauth"`, lazy httpx client seam `_build_youtube(creds)`, `_is_transient`/`_is_auth_failure` (5xx/timeouts → Retryable, 401 → AuthFailure, 403 quota → Retryable).
+   - `publish`: fail closed on missing idempotency_key/media_ref; §8.3 remote check — list own recent uploads, match `sme-ref:{key}` marker in description → return existing URL; else resumable upload (init → PUT chunks) of workspace file, title/description from item, marker appended; return `watch?v=` URL.
+   - `delete`: parse video id from external_url, `videos.delete`, already-gone = no-op.
+   - Register in `get_adapter` (base.py); add YOUTUBE `OAuthProvider` to `OWNED_TOKEN_PROVIDERS` (oauth_refresh.py) — token URL `https://oauth2.googleapis.com/token`, upload+readonly scopes; verify client auth style (body, not Basic) for Google.
+   - **Direct httpx, no google-api-python-client** — matches repo test pattern and the issue's "stub YouTube server" test plan.
+   - Tests (`tests/test_youtube_adapter.py`): stub YouTube via `httpx.MockTransport` — happy path, idempotent re-publish (no second upload), transient→Retryable, 401→AuthFailure→fence, missing key/file fails closed, retract, resumable-upload chunk resume.
+
+7. **Integration: media queue cold-start + pipeline** — `tests/test_media_video_queue.py`
+   - Copy `test_media_queue.py:82` pattern: enqueue `media.render_video` with no worker → `media_queue_depth()==1` → `start_worker(queues=[media])` → result completes (requires_redis + ffmpeg-skip).
+   - Full generate→gate→render-tick→pace→publish flow against stub YouTube (real SQLite, seams at HTTP boundaries only).
 
 ## Acceptance criteria → test map
-- [ ] Celery + Redis `media` queue w/ retries + Flower → `test_media_queue.py` (real Redis) + flower service in compose
-- [ ] SQLite → Postgres path exercised → `test_postgres_path.py` in CI (services block) + migration doc
-- [ ] Provisioner boots pod on pending jobs / tears down on idle (verified destroyed) → `test_gpu_orchestrator.py`
-- [ ] Cold-start tolerated end-to-end → cold-start integration test in `test_gpu_orchestrator.py`
-- [ ] Provider-agnostic interface, one commercial impl, key in vault/env never DB → `provisioner.py` Protocol + RunPod impl + `SME_GPU_API_KEY` SecretStr + redaction
-- [ ] Monthly cap + alert + teardown-on-idle integration test → orchestrator cap tests + caplog alert assertion
 
-## Deviations from the issue-comment plan (autonomous decisions)
-1. **Compose path**: `infra/compose.dev.yml`, not `infra/deploy/` — TECH_SPEC declares the canonical path.
-2. **No celery-beat service**: no periodic Celery tasks exist yet (scheduling stays on APScheduler per the plan's own non-goals); beat added when the first periodic Celery task lands. YAGNI.
-3. **Provisioning events in a new `gpu_lease` table, not `job_run`**: `job_run` rows are per-product; the GPU lease is global, and the lease table doubles as the pod-minutes ledger the monthly cap needs (mirrors `month_to_date_cost_cents` shape).
-4. **GPU image ships worker + ffmpeg only**: ACE-Step/manim/Remotion pins arrive with S5.1/S5.2 (their versions would be guesswork now; image stays pinned + extensible).
-5. **Provider key via env SecretStr** (`SME_GPU_API_KEY`), matching Anthropic/Stripe handling — the plan comment itself says "vault/env"; the Fernet vault is for per-product channel creds.
-6. **Redis transport for remote worker**: password-auth Redis reached over Tailscale (already installed on the VPS) documented as the deployment path; code only consumes a broker URL.
+- [ ] `video` generator produces `content_item(content_type=video)` → step 3 tests
+- [ ] Passes critic+safety (S4.3) + deterministic guard (S4.4) → step 3 gate tests
+- [ ] Publishes via YouTube Data API; long jobs retry without blocking → step 6 tests + Retryable-keeps-scheduled publish-pass test
+- [ ] GPU steps on `media` queue survive cold-start → step 7 cold-start test + routing assertion
+- [ ] Resumable/idempotent across teardown; re-run never double-publishes (§8.3) → step 3 checkpoint-skip tests, step 5 re-dispatch test, step 6 idempotency test
+- [ ] CPU/API steps on VPS worker; only GPU-bound steps rent compute → design + routing test (only `media.render_video` dispatched to Celery)
 
-## Non-goals (from issue)
-- Migrating existing text/blog crank jobs to Celery
-- Multi-provider failover
-- Autoscaling beyond 0↔1 worker
+## Deviations from the issue plan (autonomous decisions)
+
+1. **Renderer = ffmpeg caption-composition** (subprocess, pure fn) instead of manim/Remotion/video-podcast-maker — the gpu-worker image already ships ffmpeg; heavier renderers slot into the same seamed `media.render_video` task later (matches the S5.0 `media.probe` plumbing-first philosophy and TECH_SPEC §10 subprocess pattern). Render routed to the media queue per the issue's own plan, though the v1 impl is CPU-feasible — it's the step that becomes GPU-bound with real renderers.
+2. **YouTube via direct httpx** (no google SDK) — resumable upload protocol is plain HTTP; matches `httpx.MockTransport` testing and keeps pinned deps minimal.
+3. **Artifact return via Celery result backend** (base64, size-guarded) — no new storage service; noted as Known Limitation.
+4. **CPU steps on the in-process worker + APScheduler tick**, not a default-queue Celery worker (none exists; adding one would duplicate execution planes).
+5. New `RENDERING`/`RENDER_FAILED` statuses (additive str-enum values, no migration) keep unfinished videos out of pacing; render completion promotes to `CRITIC_PASSED` so pace/publish stay untouched.

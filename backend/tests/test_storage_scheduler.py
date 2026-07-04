@@ -22,6 +22,7 @@ from app.scheduler import (
     _heartbeat_digest_tick,
     _media_provisioner_tick,
     _publish_tick,
+    _video_render_tick,
     _worker_tick,
     create_scheduler,
 )
@@ -183,6 +184,7 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
         "publish",
         "heartbeat_digest",
         "media_provisioner",
+        "video_render",
     }
 
     # Pin each job's callable + interval, so a mis-wiring (wrong func/interval) fails the test.
@@ -202,6 +204,11 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
         "media_provisioner": (
             _media_provisioner_tick,
             settings.media_provisioner_interval_seconds,
+        ),
+        # S5.1: dispatch/collect GPU video renders for `rendering` items.
+        "video_render": (
+            _video_render_tick,
+            settings.video_render_tick_seconds,
         ),
     }
     for job_id, (func, interval) in expected.items():

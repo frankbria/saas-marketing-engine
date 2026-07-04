@@ -126,6 +126,32 @@ def test_build_authorize_url_has_scopes_state_and_redirect():
     assert q["state"] == ["sig-state"]
 
 
+def test_build_authorize_url_carries_provider_extra_params():
+    # S5.1: Google only returns a refresh token when the authorize URL carries
+    # access_type=offline&prompt=consent — without them the first refresh would fence the
+    # channel. Providers declare such extras on the registry entry; core params must win
+    # over a (misconfigured) extra of the same name.
+    provider = OAuthProvider(
+        authorize_url="https://provider.test/authorize",
+        token_url="https://provider.test/token",
+        scopes=("read",),
+        authorize_params=(("access_type", "offline"), ("prompt", "consent"), ("state", "evil")),
+    )
+    url = build_authorize_url(provider, "client-abc", "https://us/cb", "sig-state")
+    q = urllib.parse.parse_qs(url.partition("?")[2])
+    assert q["access_type"] == ["offline"]
+    assert q["prompt"] == ["consent"]
+    assert q["state"] == ["sig-state"]  # the signed anti-CSRF state is not overridable
+
+
+def test_youtube_provider_requests_offline_access():
+    # The live YouTube registration must actually carry the refresh-token extras — the
+    # generic test above only proves the mechanism.
+    provider = OWNED_TOKEN_PROVIDERS[ChannelType.YOUTUBE]
+    assert ("access_type", "offline") in provider.authorize_params
+    assert ("prompt", "consent") in provider.authorize_params
+
+
 # ---- S4.8.2: authorization_code exchange (injected seam) --------------------------------
 
 

@@ -131,6 +131,22 @@ class Settings(BaseSettings):
             )
         return self
 
+    # S5.1 short-form video pipeline. ElevenLabs narrates the script (CPU/API step on the VPS);
+    # the render rides the `media` queue. SecretStr per §9; None until set (TTS then fails loudly).
+    elevenlabs_api_key: SecretStr | None = None
+    # Default ElevenLabs voice (their public "Rachel" sample voice); override per deployment.
+    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"
+    # Rendered MP4s come back from the ephemeral GPU pod through the Celery result backend
+    # (Redis) — cap the transfer so a runaway render can't wedge the broker. ge=1: zero would
+    # reject every render, silently killing the video channel. ~50 MiB default fits short-form.
+    video_render_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
+    # How often the scheduler collects finished renders back into the workspace. ge=5 like the
+    # provisioner tick — sub-second polling would just hammer the result backend.
+    video_render_tick_seconds: int = Field(default=60, ge=5)
+    # How many times a lost/failed render is re-dispatched before the item fails terminal
+    # (`render_failed`). ge=1: zero would strand every item in `rendering` forever.
+    video_max_render_dispatches: int = Field(default=3, ge=1)
+
     # Public funnel-ingest rate limit (S2.2): fixed window per (slug, client IP).
     # In-process counter — adequate for the single-process v1 VPS.
     rate_limit_requests: int = 60

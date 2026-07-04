@@ -22,3 +22,23 @@ from app.worker import MAX_ATTEMPTS
 def probe(payload: str) -> str:
     """Echo the payload. Exists to prove queue plumbing, not to do work."""
     return payload
+
+
+@celery_app.task(
+    name="media.render_video",
+    acks_late=True,
+    max_retries=MAX_ATTEMPTS - 1,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+)
+def render_video(script: dict, narration_b64: str, max_bytes: int) -> str:
+    """Render the short-form MP4 on the GPU pod, returning it base64-encoded (S5.1, #29).
+
+    Thin task wrapper: the real work is the pure `app.modules.media.video.render_video`, so
+    the pod needs no DB/settings. `max_bytes` is passed in by the caller (the VPS resolves
+    settings.video_render_max_bytes) — the GPU worker must not read VPS config. Imported
+    lazily to keep this module import-light (no ffmpeg/heavy deps at registration time).
+    """
+    from app.modules.media.video import render_video as _render
+
+    return _render(script, narration_b64, max_bytes=max_bytes)

@@ -26,6 +26,7 @@ from app.config import settings
 # gets every column from create_all (a *pre-existing* Postgres needs Alembic — Phase B+).
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("content_item", "spot_check", "BOOLEAN NOT NULL DEFAULT 0"),  # S4.9
+    ("content_item", "media_ref", "TEXT"),  # S5.1: nullable — pre-video rows have no media
 )
 
 

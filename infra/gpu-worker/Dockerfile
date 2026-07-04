@@ -9,14 +9,15 @@
 # Build from the REPO ROOT (the backend package is the context):
 #   docker build -f infra/gpu-worker/Dockerfile -t sme-media-worker:<version> .
 #
-# ffmpeg is the media dep every S5.x pipeline needs; the heavyweight generators
+# ffmpeg is the media dep every S5.x pipeline needs; fonts-dejavu-core gives drawtext a
+# real font for burned-in captions (S5.1 render, issue #29). The heavyweight generators
 # (ACE-Step S5.2, manim/Remotion S5.1) layer on here when their stories land with real
 # version pins — guessing their pins now would be a lie about reproducibility.
 
 FROM python:3.13-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # uv (pinned) installs the exact backend lockfile — the image is only reproducible

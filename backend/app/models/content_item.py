@@ -26,6 +26,8 @@ class ContentItemStatus(StrEnum):
     PUBLISHED = "published"  # S4.5: live on the channel
     PUBLISH_FAILED = "publish_failed"  # S4.5: adapter failed
     RETRACTED = "retracted"  # S4.7: pulled after publish
+    RENDERING = "rendering"  # S5.1: gates passed, media render in flight on the GPU queue
+    RENDER_FAILED = "render_failed"  # S5.1: render exhausted its re-dispatch budget
 
 
 # Terminal-failure states a generated item can be in — excluded when gathering recent items for
@@ -36,6 +38,7 @@ _TERMINAL_FAILURE = frozenset(
         ContentItemStatus.GUARD_FAILED,
         ContentItemStatus.PUBLISH_FAILED,
         ContentItemStatus.RETRACTED,
+        ContentItemStatus.RENDER_FAILED,
     }
 )
 
@@ -73,5 +76,8 @@ class ContentItem(SQLModel, table=True):
     published_at: datetime | None = None
     external_url: str | None = None
     error: str | None = None
+    # S5.1: workspace-relative path of the rendered media artifact (e.g. the final MP4). Set by
+    # the render-collect tick; the publish adapter reads the file from here. NULL for text items.
+    media_ref: str | None = None
 
     created_at: datetime = Field(default_factory=_utcnow)
