@@ -125,7 +125,8 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   has elapsed since its last crank (due-ness is DB-side; no Python tz arithmetic on SQLite
   datetimes). `@handler("crank")` fans out one `generate` child `job_run` per enabled, autonomous,
   non-paused channel × applicable content type (`blog` for `ChannelType.BLOG`, `social` for
-  `ChannelType.REDDIT`). Children carry `channel_id`/`content_type` for per-cell crash isolation;
+  `ChannelType.REDDIT`, `video` for `ChannelType.YOUTUBE` since S5.1). Children carry
+  `channel_id`/`content_type` for per-cell crash isolation;
   added (not committed) here — the worker commits them atomically with the crank's DONE status.
 
 ### Content generators — social + SEO blog (S4.2 + S4.3)
@@ -237,3 +238,55 @@ v1 ports (verified free on the dev VPS): FastAPI `:8010`, dashboard `:3010`, Flo
 `infra/deploy/PORTS.md`; run `infra/deploy/check-ports.sh` on the host before binding.
 Celery/Redis/Postgres are Phase B additions (S5.0), scoped to the `media` queue above — the
 text/blog crank and both APIs still run on the in-process worker loop + SQLite by default.
+
+### Short-form video pipeline (S5.1)
+
+- `modules/crank/generate_video.py` — `run_generate_video` (the video cell of the `generate`
+  fan-out, `content_type=video`): LLM script (`generate_video_script`, structured `VideoScript` of
+  title/pillar/description/segments) → the same S4.3 critic+safety call and S4.4 deterministic
+  guard the text pipeline uses (run on the script text: description + every caption/narration
+  line) → on a pass, an ElevenLabs TTS call narrates the full script in one request (needs env
+  **`SME_ELEVENLABS_API_KEY`**; voice via `SME_ELEVENLABS_VOICE_ID`, a `SecretStr`, registered with
+  the vault's log redaction). The script (with its critic verdict) and the narration MP3 are
+  checkpointed under `workspace/{slug}/media/video/job-{id}/` the moment they exist, so a worker
+  retry after a crash re-spends no LLM call or TTS request. A gate failure persists the same
+  terminal statuses as text (`critic_failed`/`guard_failed`); a pass persists the `ContentItem` at
+  `rendering` — this handler never touches the GPU/Celery boundary itself.
+- `modules/crank/video_pipeline.py` — `advance_video_renders`, a new scheduler tick (**`video_render`**,
+  every `SME_VIDEO_RENDER_TICK_SECONDS`, default 60) that owns the bridge between the two Phase B
+  execution planes: dispatches each `rendering` item's checkpointed script+narration as a
+  `media.render_video` Celery task (parks on the broker until the S5.0 provisioner boots a pod),
+  polls outstanding tasks, and on success writes the returned MP4 into the workspace as
+  `item.media_ref` + promotes the item to `critic_passed` (handing it to the existing S4.5
+  pace/publish machinery). A failed/oversized result is re-dispatched up to
+  `SME_VIDEO_MAX_RENDER_DISPATCHES` (default 3) before the item terminates `render_failed` instead
+  of stranding in `rendering` forever; each item commits independently (crash isolation, same
+  convention as `publish_scheduled`), and the tick itself never raises.
+- `modules/media/video.py` + `modules/media/tasks.py` — `media.render_video`, the second real task
+  on the GPU `media` queue (after S5.0's `media.probe`): a **pure** ffmpeg composition (no DB, no
+  broker, no app settings) that burns each caption over an equal slice of the narration's duration
+  on a solid background and muxes in the audio, returned base64-encoded (Celery's JSON serializer
+  can't carry raw bytes) and capped by `SME_VIDEO_RENDER_MAX_BYTES` (default 50 MiB). `ffprobe`/`ffmpeg`
+  subprocess calls are wall-clock-bounded (60s/600s) so a hung encode can't wedge the
+  `--concurrency=1` pod into looking busy forever. `infra/gpu-worker/Dockerfile` now installs
+  `fonts-dejavu-core` for `drawtext`.
+- `channels/youtube.py` — `YouTubeAdapter`, the first live channel adapter beyond blog/Reddit:
+  uploads `item.media_ref` via the YouTube Data API v3 resumable-upload protocol (init POST for a
+  session `Location`, then a byte PUT). Idempotency (no native provider key) embeds
+  `sme-ref:{idempotency_key}` in the description and scans the channel's **uploads playlist**
+  (near-real-time, unlike the lagging search index) for that marker before uploading, returning the
+  existing watch URL instead of re-posting. Errors mirror `reddit.py`'s split: 5xx/429/transport →
+  `Retryable`; 401 → `AuthFailure` (fences the channel, S4.8); other 4xx → permanent
+  `publish_failed`. `delete` retracts by video id (S4.7), 404 treated as already-gone.
+- `modules/crank/oauth_refresh.py` — `OWNED_TOKEN_PROVIDERS` gets its first live entry,
+  `ChannelType.YOUTUBE` (Google OAuth, `youtube.upload`/`youtube.readonly` scopes). `OAuthProvider`
+  gains `authorize_params` (provider-specific authorize-time query params merged first so core
+  protocol params always win) — Google needs `access_type=offline&prompt=consent` or it never
+  returns a refresh token.
+- `models/content_item.py` — two new terminal-ish statuses, `rendering` (gates passed, GPU render in
+  flight) and `render_failed` (re-dispatch budget exhausted); a nullable `media_ref` column
+  (workspace-relative path to the rendered artifact, read by the publish adapter). `db.py`'s
+  `_backfill_additive_columns` adds `media_ref` to pre-existing SQLite databases the same way S4.9
+  added `spot_check` — no Alembic in v1.
+- `modules/crank/crank.py` — `ChannelType.YOUTUBE` now maps to `ContentType.VIDEO` in the fan-out
+  table, and `AUTONOMOUS_TYPES` (`models/channel.py`) includes `YOUTUBE` alongside blog/Reddit.

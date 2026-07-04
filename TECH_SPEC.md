@@ -45,10 +45,11 @@ This spec is the implementation contract. Each section maps to dependency-ordere
              ▼                    │ publish (API-first)
    per-product workspace          ▼
    (templated site, content) ┌──────────────────────┐
-                             │ Channel adapters      │
-                             │ blog (owned) · Reddit │  v1
-                             │ [IG/X/YouTube deferred]│
-                             └──────────────────────┘
+                             │ Channel adapters       │
+                             │ blog (owned) · Reddit  │  v1
+                             │ · YouTube (video, S5.1)│
+                             │ [IG/X deferred]        │
+                             └────────────────────────┘
 ```
 
 **Processes on the VPS (v1):** `fastapi` (uvicorn/gunicorn — hosts both routers + APScheduler +
@@ -141,7 +142,7 @@ strategy_brief        (1:1 product)
 
 channel               (1:N product)
   id, product_id, type (enum: blog|reddit|x|instagram|youtube),
-  enabled, autonomous (bool),                              # v1: blog/reddit true; others false
+  enabled, autonomous (bool),                    # v1: blog/reddit/youtube true (S5.1); x/instagram false
   account_ref, connect_state (enum: pending|connected|failed),
   daily_cap, paused (bool)
 
@@ -159,7 +160,8 @@ qa_checklist_item     (1:N product)
 content_item          (1:N product)
   id, product_id, channel_id, content_type (enum: social|blog|video|podcast),
   status (enum: generated|critic_passed|critic_failed|guard_failed|
-                scheduled|published|publish_failed|retracted),
+                scheduled|published|publish_failed|retracted|
+                rendering|render_failed),                        # rendering/render_failed: S5.1
   body_ref, media_ref, critic_score, critic_notes,
   tracking_token,                # UTM threaded into published links
   idempotency_key,               # unique per (content_item, channel)
@@ -273,7 +275,7 @@ class ChannelAdapter(Protocol):
 |---|---|---|
 | Blog (owned site) | ✅ autonomous | Direct write to the product's site repo/CMS (API/file) — fully owned, zero ToS risk |
 | Reddit | ✅ autonomous (cautious) | PRAW (OAuth); warmed account, value-first/non-promo content policy, per-subreddit rules |
-| YouTube | ⏸ Phase B | needs video (Phase B); YouTube Data API then |
+| YouTube | ✅ autonomous (S5.1) | video pipeline (script→TTS→GPU render) + YouTube Data API v3 resumable upload |
 | X | ⏸ deferred/human-assisted | API tier gated; cold-account risk |
 | Instagram | ⏸ deferred/human-assisted | Graph API painful + ToS-hostile to autonomous posting |
 
@@ -374,5 +376,5 @@ adapters land before the crank that calls them; the public-API split (S2.2) land
 ## 14. Deferred (explicitly not v1)
 B2E pipeline · paid ads · multi-tenant/customer auth · per-product vault keys · operator login
 (until dashboard is publicly exposed) · paid ESP/analytics SaaS · browser-automation publishing ·
-X/IG/YouTube autonomous posting · video/podcast (Phase B) · `trial`/`freemium` monetization ·
+X/IG autonomous posting · podcast (Phase B, S5.2) · `trial`/`freemium` monetization ·
 Celery/Redis/Postgres (until Phase B) · portfolio roll-up dashboard.
