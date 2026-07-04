@@ -28,6 +28,12 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY backend/app ./app
 
+# Non-root: this worker will run ffmpeg (and later heavyweight generators) over
+# generated media — an exploit there must not get root in the container (Trivy DS-0002).
+RUN useradd --system --uid 10001 --home-dir /srv/sme --shell /usr/sbin/nologin sme \
+    && chown -R sme /srv/sme
+USER sme
+
 ENV PATH="/srv/sme/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 

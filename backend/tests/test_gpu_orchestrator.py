@@ -256,11 +256,35 @@ def test_month_to_date_ignores_previous_months(session):
             pod_id="pod-june",
             status=GpuLeaseStatus.ENDED,
             started_at=NOW - timedelta(days=40),
+            ended_at=NOW - timedelta(days=39),  # fully inside the previous month
             cost_cents=9_999,
         )
     )
     session.commit()
     assert month_to_date_gpu_cost_cents(session, NOW) == 0
+
+
+def test_month_to_date_counts_closed_boundary_spanning_lease(session):
+    # CodeRabbit finding: a lease that started last month and CLOSED this month must
+    # contribute its current-month portion to the cap — not vanish from the query.
+    ended = NOW - timedelta(days=13)  # July 2, 12:00 (NOW is July 15)
+    session.add(
+        GpuLease(
+            provider="runpod",
+            pod_id="pod-rollover",
+            status=GpuLeaseStatus.ENDED,
+            started_at=NOW - timedelta(days=40),  # June 5
+            ended_at=ended,
+            cost_cents=999_999,  # full-lifetime cost — must NOT be used verbatim
+        )
+    )
+    session.commit()
+    month_start = NOW.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    expected_minutes = int((ended - month_start).total_seconds() // 60)
+    assert (
+        month_to_date_gpu_cost_cents(session, NOW)
+        == expected_minutes * settings.gpu_pod_rate_cents_per_minute
+    )
 
 
 def test_lost_pod_is_detected_and_lease_closed(session, caplog):

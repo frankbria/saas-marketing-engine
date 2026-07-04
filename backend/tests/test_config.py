@@ -80,11 +80,11 @@ def test_media_gpu_defaults(monkeypatch):
 
 
 def test_gpu_api_key_is_secret(monkeypatch):
-    monkeypatch.setenv("SME_GPU_API_KEY", "rp_test_abc123")
+    monkeypatch.setenv("SME_GPU_API_KEY", "test-key-placeholder")
     s = Settings()
     assert isinstance(s.gpu_api_key, SecretStr)
-    assert "rp_test_abc123" not in repr(s)
-    assert s.gpu_api_key.get_secret_value() == "rp_test_abc123"
+    assert "test-key-placeholder" not in repr(s)
+    assert s.gpu_api_key.get_secret_value() == "test-key-placeholder"
 
 
 @pytest.mark.parametrize(
@@ -109,4 +109,12 @@ def test_cap_without_rate_fails_at_startup(monkeypatch):
     monkeypatch.setenv("SME_MEDIA_GPU_MONTHLY_CAP_CENTS", "5000")
     monkeypatch.setenv("SME_GPU_POD_RATE_CENTS_PER_MINUTE", "0")
     with pytest.raises(ValueError, match="rate"):
+        Settings()
+
+
+def test_unknown_gpu_provider_fails_at_startup(monkeypatch):
+    # Only the implemented provider is legal config — a typo'd deploy value must fail
+    # loudly at boot, not at first provisioning attempt hours later.
+    monkeypatch.setenv("SME_GPU_PROVIDER", "aws")
+    with pytest.raises(ValueError, match="gpu_provider"):
         Settings()

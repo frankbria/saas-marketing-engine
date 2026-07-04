@@ -45,6 +45,21 @@ def _clear_alert(kind: str) -> None:
     _alerted.discard(kind)
 
 
+def _with_provider(provider: GpuProvisioner | None, fn):
+    """Run `fn(provider)`, building one from settings when none was injected — and then
+    closing the built one (its httpx pool would otherwise leak sockets across ticks in a
+    long-running scheduler). Injected providers belong to the caller and stay open."""
+    owns = provider is None
+    resolved = provider or provisioner_mod.build_provider()
+    try:
+        return fn(resolved)
+    finally:
+        if owns:
+            close = getattr(resolved, "close", None)
+            if close is not None:
+                close()
+
+
 def _aware(dt: datetime) -> datetime:
     # SQLite hands datetimes back tz-naive; normalize to aware UTC so arithmetic against
     # the aware `now` doesn't raise offset-naive/offset-aware TypeErrors (publish.py pattern).
@@ -61,19 +76,26 @@ def month_to_date_gpu_cost_cents(session: Session, now: datetime) -> int:
     their recorded cost, plus the active lease accrued at the configured rate."""
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     total = 0
-    # ACTIVE leases are included regardless of start date: one spanning the month rollover
-    # must keep accruing against the new month's cap (clamped to the month start), not
-    # escape it entirely.
+    # Any lease overlapping this month counts: started in-month, still ACTIVE, or closed
+    # in-month after a rollover. A boundary-spanning lease contributes only its
+    # current-month portion (clamped recompute at the configured rate); a fully in-month
+    # closed lease uses its recorded cost.
     leases = session.exec(
         select(GpuLease).where(
-            (GpuLease.started_at >= month_start) | (GpuLease.status == GpuLeaseStatus.ACTIVE)
+            (GpuLease.started_at >= month_start)
+            | (GpuLease.status == GpuLeaseStatus.ACTIVE)
+            | (GpuLease.ended_at >= month_start)
         )
     ).all()
     for lease in leases:
-        if lease.status == GpuLeaseStatus.ACTIVE:
-            total += _lease_cost_cents(max(_aware(lease.started_at), month_start), now)
+        started = _aware(lease.started_at)
+        if lease.status != GpuLeaseStatus.ACTIVE and lease.ended_at is not None:
+            if started >= month_start:
+                total += lease.cost_cents
+            else:
+                total += _lease_cost_cents(month_start, _aware(lease.ended_at))
         else:
-            total += lease.cost_cents
+            total += _lease_cost_cents(max(started, month_start), now)
     return total
 
 
@@ -128,8 +150,7 @@ def _decide(
             # Work is pending but no worker answers: either the pod is still booting
             # (workers take minutes to join) or the provider reclaimed it out-of-band
             # (spot loss/crash). The provider is the source of truth — no grace timer.
-            provider = provider or provisioner_mod.build_provider()
-            if provider.status() is PodState.NONE:
+            if _with_provider(provider, lambda p: p.status()) is PodState.NONE:
                 _mark_lost(session, now, lease)
         return
 
@@ -162,8 +183,7 @@ def _boot(session: Session, now: datetime, provider: GpuProvisioner | None, dept
             return
         _clear_alert("gpu_spend_cap")
 
-    provider = provider or provisioner_mod.build_provider()
-    pod_id = provider.ensure_worker()
+    pod_id = _with_provider(provider, lambda p: p.ensure_worker())
     session.add(GpuLease(provider=settings.gpu_provider, pod_id=pod_id, started_at=now))
     session.commit()
     _clear_alert("gpu_provision_failed")
@@ -191,8 +211,7 @@ def _mark_lost(session: Session, now: datetime, lease: GpuLease) -> None:
 def _teardown(
     session: Session, now: datetime, provider: GpuProvisioner | None, lease: GpuLease
 ) -> None:
-    provider = provider or provisioner_mod.build_provider()
-    verified = provider.teardown(lease.pod_id)
+    verified = _with_provider(provider, lambda p: p.teardown(lease.pod_id))
     lease.ended_at = now
     lease.cost_cents = _lease_cost_cents(lease.started_at, now)
     if verified:

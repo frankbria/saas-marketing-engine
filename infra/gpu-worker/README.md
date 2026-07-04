@@ -40,8 +40,8 @@ on the VPS — never in the repo or the DB (§9).
 ## Local smoke test
 
 ```bash
-docker run --rm -e SME_CELERY_BROKER_URL=redis://host.docker.internal:6390/0 \
+# --network host: the compose dev Redis is loopback-only (:6390, infra/compose.dev.yml);
+# host.docker.internal would need --add-host on native Linux Docker anyway.
+docker run --rm --network host -e SME_CELERY_BROKER_URL=redis://localhost:6390/0 \
   sme-media-worker:v1 celery -A app.celery_app inspect ping
 ```
-
-(Compose dev Redis is loopback:6390 — `infra/compose.dev.yml`.)

@@ -6,17 +6,25 @@ orchestrator takes them as injectable callables so its state machine tests stay
 deterministic without mocking Redis.
 """
 
+from functools import lru_cache
+
 import redis
 
 from app.celery_app import MEDIA_QUEUE, celery_app
 from app.config import settings
 
 
+@lru_cache(maxsize=1)
+def _redis_client() -> redis.Redis:
+    # One shared client (and connection pool) per process — this helper runs on every
+    # provisioner tick; a fresh pool each call would leak sockets until GC.
+    return redis.Redis.from_url(settings.celery_broker_url)
+
+
 def media_queue_depth() -> int:
     """Pending (undelivered) messages on the media queue. Celery's Redis transport keeps
     a queue as a plain list keyed by queue name, so depth is just LLEN."""
-    client = redis.Redis.from_url(settings.celery_broker_url)
-    return int(client.llen(MEDIA_QUEUE))
+    return int(_redis_client().llen(MEDIA_QUEUE))
 
 
 def media_worker_online(timeout: float = 1.0) -> bool:

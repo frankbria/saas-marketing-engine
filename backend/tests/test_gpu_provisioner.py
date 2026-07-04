@@ -161,11 +161,12 @@ def test_build_provider_registers_key_for_redaction(monkeypatch):
 
     from app.secrets.vault import redact
 
-    monkeypatch.setattr(settings, "gpu_api_key", SecretStr("rp_redact_me_9x7"))
+    monkeypatch.setattr(settings, "gpu_api_key", SecretStr("test-redaction-placeholder"))
     monkeypatch.setattr(settings, "gpu_provider", "runpod")
     build_provider()
     # The key must never appear in any log line (§9) — redact() proves registration.
-    assert "rp_redact_me_9x7" not in redact("boot failed: token rp_redact_me_9x7 rejected")
+    leaked = redact("boot failed: token test-redaction-placeholder rejected")
+    assert "test-redaction-placeholder" not in leaked
 
 
 def test_build_provider_seam_is_monkeypatchable(monkeypatch):

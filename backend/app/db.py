@@ -46,8 +46,11 @@ def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
 
 def build_engine(url: str) -> Engine:
     """An engine with the dialect-appropriate connection setup. PRAGMAs are attached only
-    to SQLite engines — on Postgres the statements would be syntax errors on connect."""
-    eng = create_engine(url, connect_args=_connect_args(url))
+    to SQLite engines — on Postgres the statements would be syntax errors on connect.
+    pool_pre_ping guards the server-backed path: a scheduler that idles overnight must
+    not crash its first tick on a connection the server already closed (no-op cost on
+    SQLite's file handles)."""
+    eng = create_engine(url, connect_args=_connect_args(url), pool_pre_ping=True)
     if eng.dialect.name == "sqlite":
         event.listens_for(eng, "connect")(_set_sqlite_pragmas)
     return eng

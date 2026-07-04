@@ -91,7 +91,17 @@ class Settings(BaseSettings):
     # S5.0 ephemeral rented GPU worker (issue #28 / TECH_SPEC Phase B decision 2026-07-03).
     # The provisioner boots one provider pod when `media` jobs are pending and tears it down
     # when the queue goes idle — cost tracks job minutes, no idle spend.
+    # Validated at startup (fail loud, house style): only the implemented provider is legal.
+    # Widen the set when a second implementation lands — build_provider is the dispatch.
     gpu_provider: str = "runpod"
+
+    @field_validator("gpu_provider")
+    @classmethod
+    def _known_gpu_provider(cls, v: str) -> str:
+        if v not in ("runpod",):
+            raise ValueError(f"unknown gpu_provider {v!r} — only 'runpod' is implemented")
+        return v
+
     # Provider API key — env `SME_GPU_API_KEY`, never stored in the DB (§9). SecretStr so it
     # never leaks via repr; None until set (provisioning then fails loudly).
     gpu_api_key: SecretStr | None = None

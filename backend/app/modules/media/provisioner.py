@@ -53,6 +53,11 @@ class RunPodProvisioner:
         self._template_id = template_id
         self._client = client
 
+    def close(self) -> None:
+        """Release the HTTP connection pool. The orchestrator closes providers it built
+        itself (build_provider per action); injected providers stay open for their owner."""
+        self._client.close()
+
     def ensure_worker(self) -> str:
         existing = self._find_existing()
         if existing is not None:
