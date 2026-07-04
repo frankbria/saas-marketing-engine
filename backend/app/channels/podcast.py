@@ -98,7 +98,12 @@ class PodcastAdapter:
 
         meta = json.loads(item.meta_json) if item.meta_json else {}
         description = meta.get("description") or item.body
-        pub_dt = item.published_at or item.created_at
+        # RSS pubDate = the release time. The publish pass sets `published_at` only *after* this
+        # adapter returns, so it is still None here; `scheduled_for` (set by pacing) is the intended
+        # release time and is stable across idempotent re-publishes — prefer it so a scheduled or
+        # backlogged episode advertises its release date and the feed sorts by release, not
+        # generation. Fall back to published_at (a manual/unpaced publish) then created_at.
+        pub_dt = item.scheduled_for or item.published_at or item.created_at
         sidecar = {
             "slug": slug,
             "title": item.title or slug,
@@ -192,9 +197,15 @@ def _rebuild_feed(podcast_dir: Path, product: Product, base: str) -> None:
 def _rfc822(iso: str) -> str:
     """RFC-822 date for RSS pubDate. Falls back to the raw ISO string if it can't be parsed rather
     than dropping the episode from the feed."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     try:
-        return format_datetime(datetime.fromisoformat(iso))
+        dt = datetime.fromisoformat(iso)
     except ValueError:
         return iso
+    # SQLite round-trips datetimes as naive; the app stores UTC (datetime.now(UTC)), so treat a
+    # naive value as UTC and emit an explicit `GMT` date — a bare offset-less RFC-822 date parses as
+    # "-0000" (unknown offset), which is technically undated for strict RSS readers.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return format_datetime(dt, usegmt=True)

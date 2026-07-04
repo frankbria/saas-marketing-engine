@@ -195,6 +195,25 @@ def test_delete_prunes_episode_and_rebuilds_feed(session, workspace):
     assert len(_feed_root(workspace, p).find("channel").findall("item")) == 0  # feed rebuilt empty
 
 
+def test_pubdate_uses_scheduled_release_not_generation_time(session, workspace):
+    # The publish pass sets published_at only after the adapter returns, so the feed must date the
+    # episode by its scheduled release (set at pace time), not its earlier generation timestamp —
+    # otherwise a backlogged episode advertises a stale date and the feed sorts by generation.
+    from email.utils import parsedate_to_datetime
+
+    p = _product(session)
+    c = _channel(session, p.id)
+    item = _episode(session, workspace, p)  # created_at = 2026-07-01
+    item.scheduled_for = datetime(2026, 7, 5, 9, 0, tzinfo=UTC)  # released later
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+
+    PodcastAdapter().publish(item, p, c, None)
+    pub = _feed_root(workspace, p).find("channel").find("item").find("pubDate").text
+    assert parsedate_to_datetime(pub) == datetime(2026, 7, 5, 9, 0, tzinfo=UTC)
+
+
 def test_publish_without_media_ref_fails_loudly(session, workspace):
     p = _product(session)
     c = _channel(session, p.id)

@@ -122,7 +122,7 @@ class ChannelProfile(BaseModel):
     `type` echoes the requested channel so a list response can be matched back to the right row.
     The warm-up note is added deterministically downstream (not the model's job)."""
 
-    type: Literal["blog", "reddit", "x", "instagram", "youtube"]
+    type: Literal["blog", "reddit", "x", "instagram", "youtube", "podcast"]
     handle: str  # suggested account handle/username
     bio: str  # short profile bio
     profile_copy: str  # longer "about" / profile description
