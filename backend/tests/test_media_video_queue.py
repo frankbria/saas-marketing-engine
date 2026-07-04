@@ -12,15 +12,38 @@ YouTube behind httpx.MockTransport) — DB, workspace, broker, and worker are al
 """
 
 import base64
+import json
 import shutil
 import subprocess
+import time
+from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 import redis
+from sqlalchemy import event
+from sqlmodel import Session, SQLModel, create_engine, select
 
+from app.ai.client import BrandKit, CriticVerdict, VideoScript, VideoSegment, VoiceDescriptor
 from app.celery_app import MEDIA_QUEUE, celery_app
 from app.config import settings
+from app.models import (
+    Channel,
+    ChannelType,
+    ConnectState,
+    ContentItem,
+    ContentItemStatus,
+    LifecycleState,
+    Product,
+    StrategyBrief,
+)
+from app.modules.crank.crank import ContentType
+from app.modules.crank.generate_video import run_generate_video
+from app.modules.crank.publish import pace_content, publish_scheduled
+from app.modules.crank.video_pipeline import advance_video_renders
 from app.modules.media.queue import media_queue_depth
+from app.secrets import vault
+from app.worker import enqueue
 
 
 def _redis_available() -> bool:
@@ -94,3 +117,133 @@ def test_render_enqueued_with_no_worker_completes_once_worker_joins():
         assert media_queue_depth() == 0
     finally:
         _drain_media_queue()
+
+
+# --- full pipeline: generate → gates → queue render → collect → pace → publish -------------------
+
+
+@pytest.fixture
+def session(tmp_path):
+    db = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{db}", connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def _pragmas(conn, _rec):
+        cur = conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.close()
+
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        yield s
+
+
+@requires_redis
+@requires_ffmpeg
+def test_full_video_pipeline_generate_to_publish(session, tmp_path, monkeypatch):
+    # Every seam end-to-end with only the true network boundaries stubbed: LLM + TTS are injected
+    # callables, YouTube is a fake API behind httpx.MockTransport — the DB, workspace, Redis
+    # broker, Celery worker, and the ffmpeg render are all real.
+    from celery.contrib.testing.worker import start_worker
+
+    from tests.test_youtube_adapter import _FakeYouTubeApi
+
+    monkeypatch.setattr(settings, "workspace_root", str(tmp_path / "ws"))
+    monkeypatch.setattr(vault.settings, "vault_key", vault.generate_key())
+
+    product = Product(
+        name="Acme",
+        slug="live",
+        lifecycle_state=LifecycleState.LIVE,
+        brand_json=BrandKit(
+            name="Acme",
+            tone="confident",
+            voice_descriptors=[VoiceDescriptor(descriptor="clear", guidance="short")],
+            visual_seeds=["indigo"],
+        ).model_dump_json(),
+    )
+    session.add(product)
+    session.commit()
+    session.refresh(product)
+    session.add(
+        StrategyBrief(
+            product_id=product.id,
+            icp_json="{}",
+            pain_points_json="[]",
+            positioning="Fastest way to X.",
+            channel_plan_json="[]",
+            content_pillars_json=json.dumps(["onboarding"]),
+            cadence_json="{}",
+        )
+    )
+    channel = Channel(
+        product_id=product.id,
+        type=ChannelType.YOUTUBE,
+        enabled=True,
+        autonomous=True,
+        connect_state=ConnectState.CONNECTED,
+    )
+    session.add(channel)
+    session.commit()
+    session.refresh(channel)
+    vault.put_credential(session, product.id, "youtube_oauth", "tok", channel_id=channel.id)
+
+    # 1) generate: script (stub LLM) → gates → TTS (stub) → `rendering` + workspace checkpoints
+    job = enqueue(
+        session,
+        "generate",
+        product_id=product.id,
+        channel_id=channel.id,
+        content_type=ContentType.VIDEO.value,
+    )
+    script = VideoScript(
+        title="Why Acme wins",
+        description="A quick tour.",
+        segments=[VideoSegment(caption="Meet Acme", narration="This is Acme.")],
+        pillar="onboarding",
+    )
+    run_generate_video(
+        job,
+        session,
+        generate=lambda *a: (script, 7),
+        critique=lambda *a: (CriticVerdict(score=0.9, safety_pass=True, notes="ok"), 2),
+        tts=lambda s: base64.b64decode(_tiny_narration_b64()),
+    )
+    session.commit()
+    item = session.exec(select(ContentItem)).one()
+    assert item.status == ContentItemStatus.RENDERING
+
+    # 2) render on the real media queue: tick dispatches, worker renders, tick collects
+    _drain_media_queue()
+    try:
+        with start_worker(celery_app, queues=[MEDIA_QUEUE], perform_ping_check=False):
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                advance_video_renders(session, datetime.now(UTC))
+                session.refresh(item)
+                if item.status != ContentItemStatus.RENDERING:
+                    break
+                time.sleep(0.5)
+    finally:
+        _drain_media_queue()
+    assert item.status == ContentItemStatus.CRITIC_PASSED
+    assert item.media_ref and (tmp_path / "ws" / item.media_ref).read_bytes()[4:8] == b"ftyp"
+
+    # 3) pace + publish through the real pass and the real adapter (fake YouTube HTTP)
+    api = _FakeYouTubeApi(video_id="VID123")
+    monkeypatch.setattr(
+        "app.channels.youtube._build_youtube",
+        lambda creds: httpx.Client(
+            transport=httpx.MockTransport(api.handler),
+            headers={"Authorization": f"Bearer {creds}"},
+        ),
+    )
+    now = datetime.now(UTC)
+    assert pace_content(session, now) != []
+    published = publish_scheduled(session, now + timedelta(hours=1))
+    session.refresh(item)
+    assert [p.id for p in published] == [item.id]
+    assert item.status == ContentItemStatus.PUBLISHED
+    assert item.external_url == "https://www.youtube.com/watch?v=VID123"
+    assert api.uploaded is not None  # the actual rendered MP4 bytes went up
+    assert api.uploaded[4:8] == b"ftyp"
