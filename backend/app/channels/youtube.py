@@ -11,10 +11,11 @@ credentials arrive as a BARE access-token string (the owned-token shape `refresh
 maintains), so the client just sets `Authorization: Bearer <token>`.
 
 Idempotency (§8.3, keyed on `item.idempotency_key`): YouTube has no native idempotency key, so the
-video description carries a small `sme-ref:{key}` marker; before uploading we scan our own recent
-uploads (search → videos.list) for that marker and return the existing watch URL instead of
-re-uploading — the §7 "check remote before re-post" rule, keyed on the idempotency key (not the
-title, so two items sharing a title never collide). The DB status guard remains the primary defense.
+video description carries a small `sme-ref:{key}` marker; before uploading we scan the channel's
+uploads playlist (channels.list → playlistItems.list — near-real-time, unlike the lagging search
+index) for that marker and return the existing watch URL instead of re-uploading — the §7 "check
+remote before re-post" rule, keyed on the idempotency key (not the title, so two items sharing a
+title never collide). The DB status guard remains the primary defense.
 
 Errors mirror reddit.py's transient/permanent split: httpx transport errors/timeouts → `Retryable`
 (retry next tick); 5xx → `Retryable`; 401 → `AuthFailure` (a dead owned token — S4.8 fences the
@@ -42,7 +43,8 @@ _RECENT_UPLOAD_SCAN = 50
 # Generous timeouts: the byte PUT streams a whole MP4, but connect should fail fast.
 _TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
-_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+_CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 _VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 _UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 # People & Blogs — a safe default category for autonomously published short-form clips.
@@ -111,31 +113,34 @@ def _raise_for_status(resp: httpx.Response, action: str) -> None:
 
 def _existing_watch_url(client: httpx.Client, marker: str) -> str | None:
     """Return the watch URL of an already-uploaded video carrying this item's ref marker in its
-    description, or None — the "check remote before re-post" idempotency guard. Two calls: search
-    for our own recent video ids, then read those videos' snippets and match the marker."""
-    resp = client.get(
-        _SEARCH_URL,
-        params={
-            "part": "id",
-            "forMine": "true",
-            "type": "video",
-            "maxResults": _RECENT_UPLOAD_SCAN,
-        },
+    description, or None — the "check remote before re-post" idempotency guard.
+
+    Reads the channel's *uploads playlist* (channels.list mine → playlistItems.list), NOT
+    search.list: the search index lags new uploads by minutes-to-hours, and the exact scenario
+    this guard exists for — upload succeeded, crash before the PUBLISHED commit, retry seconds
+    later — is the one a lagging index would miss. The uploads playlist reflects an upload
+    immediately and lists newest-first, and its snippet carries the full description."""
+    resp = client.get(_CHANNELS_URL, params={"part": "contentDetails", "mine": "true"})
+    _raise_for_status(resp, "channels")
+    channels = resp.json().get("items", [])
+    uploads = (
+        ((channels[0].get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads")
+        if channels
+        else None
     )
-    _raise_for_status(resp, "search")
-    ids = [
-        item["id"]["videoId"]
-        for item in resp.json().get("items", [])
-        if item.get("id", {}).get("videoId")
-    ]
-    if not ids:
+    if not uploads:  # brand-new channel with no uploads playlist yet → nothing published
         return None
-    resp = client.get(_VIDEOS_URL, params={"part": "snippet", "id": ",".join(ids)})
-    _raise_for_status(resp, "videos")
-    for video in resp.json().get("items", []):
-        description = (video.get("snippet") or {}).get("description", "") or ""
-        if marker in description:
-            return _watch_url(video["id"])
+    resp = client.get(
+        _PLAYLIST_ITEMS_URL,
+        params={"part": "snippet", "playlistId": uploads, "maxResults": _RECENT_UPLOAD_SCAN},
+    )
+    _raise_for_status(resp, "playlistItems")
+    for entry in resp.json().get("items", []):
+        snippet = entry.get("snippet") or {}
+        if marker in (snippet.get("description") or ""):
+            video_id = (snippet.get("resourceId") or {}).get("videoId")
+            if video_id:
+                return _watch_url(video_id)
     return None
 
 

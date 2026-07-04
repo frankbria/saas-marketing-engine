@@ -122,8 +122,17 @@ def _advance_one(session: Session, item: ContentItem, *, send: SendFn, poll: Pol
     video_dir = Path(settings.workspace_root) / meta["video_dir"]
     script = json.loads((video_dir / SCRIPT_FILE).read_text())["script"]
     narration_b64 = base64.b64encode((video_dir / NARRATION_FILE).read_bytes()).decode()
-    render["task_id"] = send(script, narration_b64, settings.video_render_max_bytes)
+    # Count the dispatch in its own commit BEFORE sending: a crash after send would otherwise
+    # lose both counter and task id, letting a crash-looping tick enqueue unbounded paid GPU
+    # work. Pre-counting makes `dispatches` a true upper bound on sends; the worst case flips
+    # to a burned attempt with no task, which the bound already prices in. (A crash between
+    # send and the task-id commit still orphans that one task — the result sits unread; fully
+    # closing that needs a transactional outbox, deliberately out of v1 scope.)
     render["dispatches"] = dispatches + 1
+    item.meta_json = json.dumps(meta)
+    session.add(item)
+    session.commit()
+    render["task_id"] = send(script, narration_b64, settings.video_render_max_bytes)
     item.meta_json = json.dumps(meta)
     session.add(item)
     session.commit()

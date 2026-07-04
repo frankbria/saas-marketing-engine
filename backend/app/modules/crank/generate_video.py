@@ -188,7 +188,10 @@ def run_generate_video(
     if script_path.exists():
         # Resume after a worker crash: the checkpoint only ever holds a gate-passed script (it is
         # written below strictly after the gates), so reuse it — and its verdict — without
-        # re-spending an LLM call.
+        # re-spending an LLM call. The crashed attempt's LLM/TTS spend is not re-recorded here
+        # (cost 0), the same crash-window cost imprecision documented for S1.1/S1.2 in
+        # generate.py — there a retry re-spends and records once; here it spends once and
+        # records zero. Both are bounded by MAX_ATTEMPTS and the monthly budget pre-check.
         checkpoint = json.loads(script_path.read_text())
         script = VideoScript.model_validate(checkpoint["script"])
         verdict = CriticVerdict.model_validate(checkpoint["critic"])

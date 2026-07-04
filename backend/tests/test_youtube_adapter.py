@@ -91,24 +91,26 @@ def video_item(session, tmp_path, monkeypatch):
 
 class _FakeYouTubeApi:
     """A hand-built YouTube Data API v3, served through httpx.MockTransport. Records every call and
-    switches on URL/method: search + videos.list (idempotency scan), resumable upload init (POST →
-    Location header) + the byte PUT, and video delete. Per-endpoint status codes let each test drive
-    the error-classification split."""
+    switches on URL/method: channels.list + playlistItems.list (the uploads-playlist idempotency
+    scan), resumable upload init (POST → Location header) + the byte PUT, and video delete.
+    Per-endpoint status codes let each test drive the error-classification split. Like the real
+    uploads playlist, a completed PUT is reflected in the scan immediately — that near-real-time
+    visibility is exactly why the adapter scans the playlist and not the lagging search index."""
 
     def __init__(
         self,
         *,
         existing=None,
         video_id="NEWVID",
-        search_status=200,
+        scan_status=200,
         init_status=200,
         put_status=200,
         delete_status=204,
         error_reason="backendError",
     ):
-        self.existing = existing or []  # list of (video_id, description)
+        self.existing = existing or []  # list of (video_id, description) — the uploads playlist
         self.video_id = video_id
-        self.search_status = search_status
+        self.scan_status = scan_status
         self.init_status = init_status
         self.put_status = put_status
         self.delete_status = delete_status
@@ -124,13 +126,16 @@ class _FakeYouTubeApi:
     def handler(self, request: httpx.Request) -> httpx.Response:
         method, url = request.method, str(request.url)
         self.calls.append((method, url))
-        if "youtube/v3/search" in url:
-            if self.search_status != 200:
-                return self._err(self.search_status)
-            items = [{"id": {"videoId": vid}} for vid, _ in self.existing]
-            return httpx.Response(200, json={"items": items})
-        if "youtube/v3/videos" in url and method == "GET":
-            items = [{"id": vid, "snippet": {"description": desc}} for vid, desc in self.existing]
+        if "youtube/v3/channels" in url:
+            if self.scan_status != 200:
+                return self._err(self.scan_status)
+            details = {"relatedPlaylists": {"uploads": "UUFAKEUPLOADS"}}
+            return httpx.Response(200, json={"items": [{"contentDetails": details}]})
+        if "youtube/v3/playlistItems" in url:
+            items = [
+                {"snippet": {"description": desc, "resourceId": {"videoId": vid}}}
+                for vid, desc in self.existing
+            ]
             return httpx.Response(200, json={"items": items})
         if "upload/youtube/v3/videos" in url and method == "POST":
             if self.init_status != 200:
@@ -141,6 +146,9 @@ class _FakeYouTubeApi:
             if self.put_status != 200:
                 return self._err(self.put_status)
             self.uploaded = request.content
+            # The uploads playlist shows the new video immediately (newest first).
+            description = (self.init_body or {}).get("snippet", {}).get("description", "")
+            self.existing.insert(0, (self.video_id, description))
             return httpx.Response(200, json={"id": self.video_id})
         if "youtube/v3/videos" in url and method == "DELETE":
             return httpx.Response(self.delete_status)
@@ -200,6 +208,24 @@ def test_publish_idempotent_returns_existing_without_upload(video_item, monkeypa
     assert r.external_url == "https://www.youtube.com/watch?v=OLDVID"
     assert api.uploaded is None
     assert not any(m == "POST" and "upload" in u for m, u in api.calls)
+
+
+def test_publish_retry_after_crash_finds_fresh_upload_without_reupload(video_item, monkeypatch):
+    # The §8.3 crash window: upload succeeded at YouTube but the process died before the
+    # PUBLISHED commit, so the publish pass retries seconds later. The uploads playlist reflects
+    # the upload immediately (unlike the lagging search index), so the retry must return the
+    # just-uploaded video's URL and never PUT a second copy.
+    api = _FakeYouTubeApi(video_id="FIRST")
+    _install(monkeypatch, api)
+    adapter = YouTubeAdapter()
+
+    first = adapter.publish(video_item.item, video_item.product, video_item.channel, "tok")
+    puts_after_first = sum(1 for m, _u in api.calls if m == "PUT")
+
+    retry = adapter.publish(video_item.item, video_item.product, video_item.channel, "tok")
+
+    assert first.external_url == retry.external_url == "https://www.youtube.com/watch?v=FIRST"
+    assert sum(1 for m, _u in api.calls if m == "PUT") == puts_after_first == 1
 
 
 def test_publish_same_title_different_key_does_not_dedup(video_item, monkeypatch):
@@ -278,7 +304,7 @@ def test_publish_server_error_on_init_is_retryable(video_item, monkeypatch):
 
 
 def test_publish_401_is_auth_failure(video_item, monkeypatch):
-    api = _FakeYouTubeApi(search_status=401)
+    api = _FakeYouTubeApi(scan_status=401)
     _install(monkeypatch, api)
 
     with pytest.raises(AuthFailure):
@@ -286,7 +312,7 @@ def test_publish_401_is_auth_failure(video_item, monkeypatch):
 
 
 def test_publish_403_quota_is_retryable(video_item, monkeypatch):
-    api = _FakeYouTubeApi(search_status=403, error_reason="quotaExceeded")
+    api = _FakeYouTubeApi(scan_status=403, error_reason="quotaExceeded")
     _install(monkeypatch, api)
 
     with pytest.raises(Retryable):
@@ -294,7 +320,7 @@ def test_publish_403_quota_is_retryable(video_item, monkeypatch):
 
 
 def test_publish_403_non_quota_is_permanent(video_item, monkeypatch):
-    api = _FakeYouTubeApi(search_status=403, error_reason="forbidden")
+    api = _FakeYouTubeApi(scan_status=403, error_reason="forbidden")
     _install(monkeypatch, api)
 
     with pytest.raises(RuntimeError):
