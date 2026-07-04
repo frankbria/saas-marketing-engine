@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 from app.config import settings
 from app.models import ContentItem
 from app.models.content_item import ContentItemStatus
+from app.modules.crank.crank import ContentType
 from app.modules.crank.generate_video import NARRATION_FILE, SCRIPT_FILE, _atomic_write
 
 logger = logging.getLogger(__name__)
@@ -75,10 +76,14 @@ def _real_poll(task_id: str) -> tuple[str, str | None]:
 def advance_video_renders(
     session: Session, now: datetime, *, send: SendFn = _real_send, poll: PollFn = _real_poll
 ) -> None:
-    """Advance every `rendering` item one step: dispatch if undispatched, collect if finished,
-    re-dispatch (bounded) if failed. Never raises — scheduler-tick contract."""
+    """Advance every `rendering` video item one step: dispatch if undispatched, collect if finished,
+    re-dispatch (bounded) if failed. Scoped to video items so it never touches a podcast audio mix
+    (S5.2 also uses `rendering`). Never raises — scheduler-tick contract."""
     items = session.exec(
-        select(ContentItem).where(ContentItem.status == ContentItemStatus.RENDERING)
+        select(ContentItem).where(
+            ContentItem.status == ContentItemStatus.RENDERING,
+            ContentItem.content_type == ContentType.VIDEO.value,
+        )
     ).all()
     for item in items:
         try:

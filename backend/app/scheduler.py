@@ -14,6 +14,7 @@ from sqlmodel import Session
 from app.config import settings
 from app.db import engine
 from app.modules.crank.crank import enqueue_due_cranks
+from app.modules.crank.podcast_pipeline import advance_podcast_renders
 from app.modules.crank.publish import pace_content, publish_scheduled
 from app.modules.crank.video_pipeline import advance_video_renders
 from app.modules.heartbeat import run_heartbeat
@@ -72,6 +73,14 @@ def _video_render_tick() -> None:
         advance_video_renders(session, datetime.now(UTC))
 
 
+def _podcast_render_tick() -> None:
+    # S5.2: dispatch/collect GPU audio mixes for music-bed podcast `rendering` items.
+    # advance_podcast_renders never raises, and its cold path (no music-bed items) touches neither
+    # the broker nor the workspace — a narration-only episode never reaches this tick.
+    with Session(engine) as session:
+        advance_podcast_renders(session, datetime.now(UTC))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """Build (but don't start) the scheduler with the v1 interval jobs."""
     scheduler = BackgroundScheduler()
@@ -104,5 +113,11 @@ def create_scheduler() -> BackgroundScheduler:
         "interval",
         seconds=settings.video_render_tick_seconds,
         id="video_render",
+    )
+    scheduler.add_job(
+        _podcast_render_tick,
+        "interval",
+        seconds=settings.podcast_render_tick_seconds,
+        id="podcast_render",
     )
     return scheduler

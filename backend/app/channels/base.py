@@ -55,6 +55,7 @@ def get_adapter(channel_type: ChannelType) -> ChannelAdapter:
     """Return the v1 adapter for an autonomous channel type. Unknown/deferred types raise."""
     # Imported here (not at module top) so importing the contract never drags in praw.
     from app.channels.blog import BlogAdapter
+    from app.channels.podcast import PodcastAdapter
     from app.channels.reddit import RedditAdapter
     from app.channels.youtube import YouTubeAdapter
 
@@ -62,6 +63,7 @@ def get_adapter(channel_type: ChannelType) -> ChannelAdapter:
         ChannelType.BLOG: BlogAdapter(),
         ChannelType.REDDIT: RedditAdapter(),
         ChannelType.YOUTUBE: YouTubeAdapter(),
+        ChannelType.PODCAST: PodcastAdapter(),
     }
     adapter = adapters.get(channel_type)
     if adapter is None:
