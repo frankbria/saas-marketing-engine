@@ -156,23 +156,25 @@ def test_build_writes_static_index_to_workspace(session, workspace):
     assert "https://api.example.com" in index.read_text()  # uses configured public API base
 
 
-def test_deploy_places_site_and_emits_vhost(session, workspace):
+def test_deploy_serves_the_built_site_and_emits_vhost(session, workspace):
+    """S4.5.1/#78: the workspace tree is served in place, so `deploy_site` returns the built dir
+    and roots the vhost there. The reachability contract itself lives in test_served_site.py."""
     product = _make_product(session)
     site_dir = site_mod.build_site(product, _stub_content())
     dest = site_mod.deploy_site(product, site_dir)
 
+    assert dest == site_dir
     assert (dest / "index.html").is_file()
-    assert dest.name == "autoauthor.app"  # keyed by marketing_domain
-    vhost = (dest.parent / "autoauthor.app.conf").read_text()
+    vhost = (workspace / "nginx" / "autoauthor.app.conf").read_text()
     assert "server_name autoauthor.app;" in vhost
-    assert str(dest) in vhost  # root points at the deployed dir
+    assert f"root {site_dir};" in vhost  # root points at the built site tree
 
 
 def test_deploy_is_idempotent(session, workspace):
     product = _make_product(session)
     site_dir = site_mod.build_site(product, _stub_content())
     site_mod.deploy_site(product, site_dir)
-    dest = site_mod.deploy_site(product, site_dir)  # second run replaces wholesale, no error
+    dest = site_mod.deploy_site(product, site_dir)  # second run rewrites the vhost, no error
     assert (dest / "index.html").is_file()
 
 
@@ -187,7 +189,7 @@ def test_deploy_requires_marketing_domain(session, workspace):
     "evil", ["../../etc", "/etc/nginx", "a/b", "foo;rm -rf", "..", "localhost"]
 )
 def test_deploy_rejects_non_hostname_domain(session, workspace, evil):
-    """A path-traversal / metacharacter domain must not reach rmtree/copytree or the vhost."""
+    """A path-traversal / metacharacter domain must not reach the `.conf` filename or the vhost."""
     product = _make_product(session, domain=evil)
     site_dir = site_mod.build_site(product, _stub_content())
     with pytest.raises(RuntimeError, match="not a valid hostname"):
@@ -208,9 +210,11 @@ def test_build_product_site_renders_deploys_and_returns_cost(session, workspace)
     )
 
     assert cost == 9
-    deployed = workspace / "nginx" / "autoauthor.app" / "index.html"
+    # S4.5.1/#78: served in place from the workspace, so the deployed page IS the built page.
+    deployed = workspace / "ws" / "auto-author" / "site" / "index.html"
     assert deployed.is_file()
     assert "Finish your book" in deployed.read_text()
+    assert (workspace / "nginx" / "autoauthor.app.conf").is_file()
 
 
 def test_build_product_site_passes_positioning_to_generate(session, workspace):
