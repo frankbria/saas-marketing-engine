@@ -144,13 +144,58 @@ def test_vhost_is_rooted_at_the_workspace_site_tree(session, workspace):
     product = _product(session)
     served_root = _deploy(product)
 
-    site_dir = workspace / "ws" / product.slug / "site"
+    site_dir = (workspace / "ws" / product.slug / "site").resolve()
     assert served_root == site_dir
     assert (served_root / "index.html").is_file()
 
     vhost = (workspace / "nginx" / f"{DOMAIN}.conf").read_text()
     assert f"server_name {DOMAIN};" in vhost
     assert f"root {site_dir};" in vhost
+
+
+def test_vhost_root_is_absolute_even_when_workspace_root_is_relative(
+    session, workspace, tmp_path, monkeypatch
+):
+    """`workspace_root` defaults to a *relative* './workspace'. nginx resolves a relative `root`
+    against its own prefix (/etc/nginx), not this process's cwd — emitting it verbatim would 404
+    every published URL, re-creating #78 one layer down. The fixture's absolute tmp_path hides
+    this, so drive it from a genuinely relative setting with cwd moved to a temp dir."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings, "workspace_root", "./relws")
+
+    product = _product(session)
+    served_root = _deploy(product)
+
+    assert served_root.is_absolute()
+    vhost = (workspace / "nginx" / f"{DOMAIN}.conf").read_text()
+    root_line = next(ln.strip() for ln in vhost.splitlines() if ln.strip().startswith("root "))
+    assert "./" not in root_line, root_line
+    assert root_line == f"root {served_root};"
+
+
+def test_deploy_refuses_a_site_dir_outside_the_workspace_root(session, workspace):
+    """`site_dir` embeds `product.slug`. Slugs are sanitised at creation, but the document root is
+    too dangerous to rely on that alone — a traversing slug must be rejected at the point of use."""
+    product = _product(session)
+    escaped = Path(settings.workspace_root).resolve().parent / "elsewhere" / "site"
+
+    with pytest.raises(RuntimeError, match="escapes the workspace root"):
+        site_mod.deploy_site(product, escaped)
+
+
+def test_vhost_hardens_the_app_mutated_document_root(session, workspace):
+    """The served tree is written by the engine at runtime, so the vhost blocks symlink escapes and
+    the in-flight atomic-write sidecars, and hard-404s published content instead of falling back to
+    the landing page (a retracted post must not keep returning 200)."""
+    product = _product(session)
+    _deploy(product)
+
+    vhost = (workspace / "nginx" / f"{DOMAIN}.conf").read_text()
+    assert "disable_symlinks on;" in vhost
+    assert "location ~ /\\. { deny all; }" in vhost
+    assert "location ~ \\.tmp$ { deny all; }" in vhost
+    assert "location /blog/ { try_files $uri $uri.html =404; }" in vhost
+    assert "location /podcast/ { try_files $uri =404; }" in vhost
 
 
 def test_deploy_copies_nothing_into_the_nginx_root(session, workspace):
@@ -173,16 +218,27 @@ def test_vhost_resolves_extensionless_post_urls(session, workspace):
     assert "$uri.html" in vhost
 
 
-def test_credentials_vault_is_not_inside_the_served_root(session, workspace):
-    """The vault lives at workspace/<slug>/vault — a *sibling* of site/, not under it. Pin that:
-    serving the workspace tree must never expose encrypted credentials."""
+def test_private_workspace_dirs_are_not_inside_the_served_root(session, workspace):
+    """Serving the workspace tree makes `site/` world-readable, so everything private must stay a
+    *sibling* of it, never underneath. Pins the two that exist today:
+
+      workspace/<slug>/vault/  — Fernet-encrypted credentials (S0.4)
+      workspace/<slug>/media/  — render checkpoints, narration MP3s, unpublished cuts (S5.1/S5.2)
+
+    A future layout change that moves either under `site/` would publish secrets or unreleased
+    media to the internet; this test is the tripwire.
+    """
     product = _product(session)
     served_root = _deploy(product)
 
-    vault = workspace / "ws" / product.slug / "vault"
-    assert vault.is_dir()
-    assert vault not in served_root.parents
-    assert not str(vault).startswith(str(served_root))
+    product_root = workspace / "ws" / product.slug
+    assert served_root == product_root / "site"
+
+    vault = product_root / "vault"
+    assert vault.is_dir()  # created by create_workspace
+    for private in (vault, product_root / "media"):
+        assert served_root not in private.parents
+        assert not private.is_relative_to(served_root)
 
 
 # ---- blog: publish → reachable → retract → gone ---------------------------------------------

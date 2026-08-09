@@ -357,7 +357,9 @@ for the operator.
 ## 11. Deployment (Hostinger dev VPS, 195.35.14.177)
 - **Check port conflicts before binding** (existing services — see server memory). v1 ports (verify free): FastAPI `:8010`, dashboard `:3010`. SQLite is a file (no port). Phase B adds Postgres/Redis/Flower ports.
 - **Public vs private:** dashboard + private API on the firewalled/private interface (no auth, SSH tunnel / IP allowlist — preserve the Cox /17 whitelist in server memory). The **public funnel API** (`/api/funnel/*`, `/api/stripe/webhook`) + generated landing sites are internet-facing via nginx, rate-limited, CORS for the product origin.
-- **Landing sites** are served from the product workspace in place (`root workspace/<slug>/site`); `deploy_site` emits only the per-domain `.conf` under `nginx_sites_root`. nginx therefore needs read access to the workspace tree — note the credentials vault is a *sibling* (`workspace/<slug>/vault/`), never under the served root.
+- **Landing sites** are served from the product workspace in place (`root workspace/<slug>/site`); `deploy_site` emits only the per-domain `.conf` under `nginx_sites_root`. nginx therefore needs read access to the workspace tree — note the credentials vault and the media/checkpoint dir are *siblings* (`workspace/<slug>/vault/`, `workspace/<slug>/media/`), never under the served root.
+  - `SME_WORKSPACE_ROOT` **must be absolute in production.** The emitted `root` is resolved to an absolute path at deploy time; a relative setting would otherwise be resolved by nginx against its own prefix (`/etc/nginx`) and 404 every page.
+  - The workspace path is **baked into each vhost when `setup_site` runs.** Relocating the workspace means re-running `setup_site` for every product — otherwise the vhosts keep pointing at the old path and every site 404s with nothing in the app logs.
 - **CORS** configured before first remote deploy. CI/CD idempotent; feature branch → PR → main; pre-commit hooks required.
 
 ---

@@ -118,18 +118,43 @@ def deploy_site(product: Product, site_dir: Path) -> Path:
             f"product {product.id} marketing_domain {domain!r} is not a valid hostname; refusing "
             "to use it as a filesystem path / nginx server_name"
         )
+    # nginx resolves a relative `root` against its own prefix (/etc/nginx), NOT this process's cwd —
+    # and `workspace_root` defaults to a relative "./workspace". Emitting that verbatim would point
+    # the vhost at /etc/nginx/workspace/... and 404 every published URL: exactly the failure class
+    # #78 exists to close, just relocated. Resolve to an absolute path before interpolating.
+    site_dir = site_dir.resolve()
+    # `site_dir` embeds `product.slug`, which is slugified at creation but not re-checked here.
+    # Containment is the point-of-use guard (same philosophy as `_HOSTNAME_RE` above): a slug
+    # carrying `..` or nginx metacharacters must not be able to aim the document root elsewhere.
+    workspace_root = Path(settings.workspace_root).resolve()
+    if not site_dir.is_relative_to(workspace_root):
+        raise RuntimeError(
+            f"product {product.id} site dir {site_dir} escapes the workspace root "
+            f"{workspace_root}; refusing to use it as an nginx document root"
+        )
     root = Path(settings.nginx_sites_root)
     root.mkdir(parents=True, exist_ok=True)
     # ponytail: HTTP-only vhost; TLS termination + `nginx -s reload` are operational (S2.7/S6.4).
+    #
     # `$uri.html` maps the extensionless post URLs BlogAdapter returns (`/blog/<slug>`) onto the
-    # `<slug>.html` it writes; without it every post falls through to `/index.html` and serves the
-    # landing page under a 200 — a soft 404 that looks fine until someone reads the page.
+    # `<slug>.html` it writes. Published content hard-404s instead of falling back to `/index.html`:
+    # a retracted post whose URL still returned the landing page under a 200 would stay indexed and
+    # make a retract undetectable by status code. Only the marketing site's own routes fall back.
+    #
+    # This document root is mutated by the engine at runtime, so it is locked down accordingly:
+    # `disable_symlinks` stops any future stray link under `site/` from publishing what it points
+    # at, and the dotfile/`.tmp` deny hides the in-flight atomic-write sidecars.
     vhost = (
         f"server {{\n"
         f"    listen 80;\n"
         f"    server_name {domain};\n"
         f"    root {site_dir};\n"
         f"    index index.html;\n"
+        f"    disable_symlinks on;\n"
+        f"    location ~ /\\. {{ deny all; }}\n"
+        f"    location ~ \\.tmp$ {{ deny all; }}\n"
+        f"    location /blog/ {{ try_files $uri $uri.html =404; }}\n"
+        f"    location /podcast/ {{ try_files $uri =404; }}\n"
         f"    location / {{ try_files $uri $uri.html $uri/ /index.html; }}\n"
         f"}}\n"
     )
