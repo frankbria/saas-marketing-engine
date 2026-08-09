@@ -9,15 +9,16 @@ cost; the worker adds it to `job_run.token_cost_cents` and commits atomically.
 Render/build/deploy are pure filesystem + templating (no network) so the wiring is testable without
 spending tokens; only the AI copy call is injected (`generate`), exactly like brand.py.
 
-ponytail: "deploy" places the static files under the configured nginx web root and emits a vhost —
-`nginx -s reload`, TLS/cert issuance, and remote copy are operational steps the live smoke test
-(S2.7) and end-to-end DoD (S6.4) exercise.
+ponytail: "deploy" emits an nginx vhost rooted at the product's workspace site tree — the tree is
+served in place, not copied (S4.5.1/#78: a copy went stale as soon as the crank published into the
+workspace). `nginx -s reload`, TLS/cert issuance, and serving from a host other than the engine's
+are operational steps the live smoke test (S2.7) and end-to-end DoD (S6.4) exercise.
 """
 
 from __future__ import annotations
 
+import os
 import re
-import shutil
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,41 +79,62 @@ def render_site(slug: str, content: SiteContent, *, api_base_url: str) -> str:
 
 
 def build_site(product: Product, content: SiteContent) -> Path:
-    """Static export: render + write `index.html` into the workspace. Returns the site dir."""
+    """Static export: render + write `index.html` into the workspace. Returns the site dir.
+
+    Written atomically (temp + `os.replace`) like the blog/podcast adapters: since S4.5.1/#78 this
+    tree is nginx's document root, so a rebuild of a live site must never expose a half-written
+    page. Same reason those adapters have always done it.
+    """
     html = render_site(product.slug, content, api_base_url=settings.public_api_base_url)
     site_dir = workspace_path(product.slug) / "site"
     site_dir.mkdir(parents=True, exist_ok=True)
-    (site_dir / "index.html").write_text(html, encoding="utf-8")
+    tmp = site_dir / ".index.html.tmp"
+    tmp.write_text(html, encoding="utf-8")
+    os.replace(tmp, site_dir / "index.html")
     return site_dir
 
 
 def deploy_site(product: Product, site_dir: Path) -> Path:
-    """Place the static site under nginx's web root keyed by `marketing_domain` + emit a vhost."""
+    """Point nginx at the product's workspace site tree + emit a vhost. Returns the served root.
+
+    The workspace tree **is** the served root — it is deliberately not copied. The crank's
+    owned-infra adapters write published artifacts straight into this tree (blog posts, S4.5;
+    podcast episodes + `feed.xml`, S5.2), so a copy taken at setup time went stale the moment the
+    first post published and every `external_url` 404'd (issue #78). One source of truth removes
+    that whole failure class: publish and retract are reachable/unreachable by construction, with
+    no sync step to drift, fail, or briefly `rmtree` a live site.
+
+    `build_site` and both adapters write atomically (temp file + `os.replace`), so nginx never
+    observes a partially-written file despite serving a tree the engine mutates.
+    """
     domain = product.marketing_domain
     if not domain:
         raise RuntimeError(f"product {product.id} has no marketing_domain; cannot deploy site")
     if not _HOSTNAME_RE.match(domain):
+        # Still load-bearing: `domain` is interpolated into the vhost `server_name` and used as the
+        # `.conf` filename, so a traversal/metacharacter value would escape the root or inject
+        # config — even though it is no longer a served-directory name.
         raise RuntimeError(
             f"product {product.id} marketing_domain {domain!r} is not a valid hostname; refusing "
             "to use it as a filesystem path / nginx server_name"
         )
     root = Path(settings.nginx_sites_root)
-    dest = root / domain
-    if dest.exists():
-        shutil.rmtree(dest)  # replace wholesale — the build is the source of truth
-    shutil.copytree(site_dir, dest)
+    root.mkdir(parents=True, exist_ok=True)
     # ponytail: HTTP-only vhost; TLS termination + `nginx -s reload` are operational (S2.7/S6.4).
+    # `$uri.html` maps the extensionless post URLs BlogAdapter returns (`/blog/<slug>`) onto the
+    # `<slug>.html` it writes; without it every post falls through to `/index.html` and serves the
+    # landing page under a 200 — a soft 404 that looks fine until someone reads the page.
     vhost = (
         f"server {{\n"
         f"    listen 80;\n"
         f"    server_name {domain};\n"
-        f"    root {dest};\n"
+        f"    root {site_dir};\n"
         f"    index index.html;\n"
-        f"    location / {{ try_files $uri $uri/ /index.html; }}\n"
+        f"    location / {{ try_files $uri $uri.html $uri/ /index.html; }}\n"
         f"}}\n"
     )
     (root / f"{domain}.conf").write_text(vhost, encoding="utf-8")
-    return dest
+    return site_dir
 
 
 def _real_generate(

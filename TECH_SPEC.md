@@ -215,8 +215,18 @@ are constant → QA is a fixed, cheap checklist. Every site implements the **Fun
 | `<AnalyticsSnippet>` | Emits `visit` on load (+ `impression` where available); self-hosted |
 | UTM capture | Reads UTM params on landing, sets a first-touch cookie (`first_touch_token`) |
 
-Sites are static-exported and served by nginx under `product.marketing_domain` (Auto Author →
-`autoauthor.app`; kept separate from `dev.autoauthor.app` staging).
+Sites are static-exported into the product workspace (`workspace/<slug>/site/`) and served by nginx
+**in place** under `product.marketing_domain` (Auto Author → `autoauthor.app`; kept separate from
+`dev.autoauthor.app` staging). `deploy_site` writes only the vhost — it does not copy the tree.
+
+The workspace tree is the single source of truth because the crank publishes into it: `BlogAdapter`
+writes `site/blog/<slug>.html` and `PodcastAdapter` writes `site/podcast/` + `feed.xml` after go-live
+(§7). A copy taken at setup time went stale on the first publish and every `external_url` 404'd
+(S4.5.1/#78). Serving in place makes publish and retract reachable/unreachable by construction, with
+no sync step to drift or fail; both the builder and the adapters write atomically (temp +
+`os.replace`), so nginx never serves a partial file. The vhost uses
+`try_files $uri $uri.html $uri/ /index.html` so the extensionless post URLs the blog adapter returns
+(`/blog/<slug>`) resolve onto the `<slug>.html` on disk.
 
 ### 6.2 Public funnel-ingest API (the split)
 A **public**, internet-facing router separate from the private dashboard API:
@@ -347,6 +357,7 @@ for the operator.
 ## 11. Deployment (Hostinger dev VPS, 195.35.14.177)
 - **Check port conflicts before binding** (existing services — see server memory). v1 ports (verify free): FastAPI `:8010`, dashboard `:3010`. SQLite is a file (no port). Phase B adds Postgres/Redis/Flower ports.
 - **Public vs private:** dashboard + private API on the firewalled/private interface (no auth, SSH tunnel / IP allowlist — preserve the Cox /17 whitelist in server memory). The **public funnel API** (`/api/funnel/*`, `/api/stripe/webhook`) + generated landing sites are internet-facing via nginx, rate-limited, CORS for the product origin.
+- **Landing sites** are served from the product workspace in place (`root workspace/<slug>/site`); `deploy_site` emits only the per-domain `.conf` under `nginx_sites_root`. nginx therefore needs read access to the workspace tree — note the credentials vault is a *sibling* (`workspace/<slug>/vault/`), never under the served root.
 - **CORS** configured before first remote deploy. CI/CD idempotent; feature branch → PR → main; pre-commit hooks required.
 
 ---

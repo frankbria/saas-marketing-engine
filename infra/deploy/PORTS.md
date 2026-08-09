@@ -57,6 +57,13 @@ location ~ ^/api/(funnel/|stripe/webhook$) {
 location /api/ { return 404; }
 ```
 
+The **static site** half of each public vhost is generated, not hand-written: `deploy_site` emits
+`<marketing_domain>.conf` under `SME_NGINX_SITES_ROOT` with `root` pointing at that product's
+workspace site tree (`workspace/<slug>/site`), served in place — the crank publishes blog posts and
+podcast episodes straight into it (S4.5.1/#78). nginx needs read access to the workspace; the
+credentials vault is a sibling of `site/`, never beneath it. Merge the API `location` blocks above
+into the generated vhost (or keep them in a shared snippet `include`d by it).
+
 App-level defenses behind nginx (do not rely on nginx alone): per-(slug, IP) rate limiting,
 strict request validation, per-product CORS scoped to each product's `marketing_domain`, and
 stdlib HMAC verification of the Stripe signature. The private surface keeps its deploy-time
