@@ -181,9 +181,16 @@ class Settings(BaseSettings):
     # None until configured (Stripe setup + checkout then fail loudly).
     stripe_api_key: SecretStr | None = None
 
-    # v1 VPS ports (verified free — see infra/deploy/PORTS.md). SQLite is a file, no port.
-    api_port: int = 8010
-    dashboard_port: int = 3010
+    # VPS ports — see infra/deploy/PORTS.md. Moved 8010/3010 → 8020/3020 in S0.5 (#80): both
+    # original ports had been claimed by other projects on the shared box before we ever bound
+    # them, which is also why the old "verified free" note here was wrong by the time it mattered.
+    #
+    # Nothing in the app reads these; the actual bind comes from ${SME_API_PORT} in the systemd
+    # unit's ExecStart, and nginx proxies to the same value rendered into its snippet. They exist
+    # so the recognized env keys have a schema — keep them in step with PORTS.md, and do not
+    # mistake them for the source of truth about what is listening.
+    api_port: int = 8020
+    dashboard_port: int = 3020
 
     # S2.4 welcome email. Outbound SMTP (or any free ESP that speaks SMTP). `smtp_host` unset ⇒
     # email is disabled (capture still works; the send is skipped + logged). `smtp_password` is a
