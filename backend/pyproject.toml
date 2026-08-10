@@ -49,16 +49,23 @@ pythonpath = ["."]
 # and would trip `fail_under` on a single-file run. CI passes `--cov` explicitly.
 [tool.coverage.run]
 source = ["app"]
-omit = ["app/__pycache__/*"]
 
 [tool.coverage.report]
 show_missing = true
+# The table lists only files with gaps; 100%-covered files are summarised as a count.
 skip_covered = true
-# Ratchet, not an aspiration: NFR-7 asks for >85%, the suite measured 91% on 2026-08-10.
-# Gate one point under the measured value so the local/CI skip-set difference (GPU and
-# real-service tests skip locally) cannot fail CI on an unrelated change. Raise this when
-# coverage rises — never lower it.
-fail_under = 90
+# Ratchet, not an aspiration. NFR-7 asks for >85%.
+#
+# The gate tracks the CI number, which is the authoritative one: CI and a dev box skip
+# *different* test sets (CI has Redis and Postgres and runs those suites; a dev box has the
+# Anthropic/Stripe keys unset and Redis unaddressed), so the two totals differ by ~1.5 points.
+# Measured 2026-08-10: CI 89.95%, local 91.48%. The gate sits just under the CI figure.
+#
+# Raise this when coverage rises; never lower it to make a red build green — add the tests.
+# `uv run coverage report` is what enforces it (see .github/workflows/ci.yml): pytest-cov does
+# NOT reliably fail the run on a config-only `fail_under` — it printed FAIL and still exited 0
+# in CI. coverage.py's own CLI exits 2. Do not "simplify" the gate back into the pytest step.
+fail_under = 89
 exclude_also = [
     # Typing-only branches never execute at runtime.
     "if TYPE_CHECKING:",

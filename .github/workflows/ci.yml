@@ -57,11 +57,16 @@ jobs:
         run: uv run ruff check .
       - name: Format check (black)
         run: uv run black --check .
-      # NFR-7 (S0.6, #81): the run prints the per-file coverage table and fails below the
-      # `fail_under` ratchet in pyproject.toml. The threshold lives in config, not here, so a
-      # local `uv run pytest --cov=app` gates identically.
-      - name: Tests + coverage (pytest)
-        run: uv run pytest --cov=app --cov-report=term
+      # NFR-7 (S0.6, #81). `-rs` puts the skip list on the record: CI and a dev box skip
+      # different suites, which is why their coverage totals differ.
+      - name: Tests (pytest, with coverage data)
+        run: uv run pytest -rs --cov=app --cov-report=
+      # The gate is a separate step on purpose. pytest-cov does NOT reliably fail the run on a
+      # config-only `fail_under` — it printed "FAIL Required test coverage of 90.0% not reached"
+      # and still exited 0 here. coverage.py's own CLI exits 2, and reads the same
+      # `[tool.coverage.report]` block, so `uv run coverage report` gates identically locally.
+      - name: Coverage report + NFR-7 gate
+        run: uv run coverage report
 
   frontend:
     runs-on: ubuntu-latest
