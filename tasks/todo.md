@@ -91,15 +91,47 @@ The box is **shared with four unrelated projects**. This is the dominant constra
 
 ## Acceptance criteria (from #80)
 
-- [ ] systemd units for the uvicorn API and the worker, with restart-on-failure
-- [ ] Idempotent deploy path; aborts non-zero if `check-ports.sh` fails
-- [ ] nginx base config committed: public vhost exposes **only** `/api/funnel/*` and
-      `/api/stripe/webhook`; everything else under `/api/` returns 404
-- [ ] TLS issuance + renewal for `marketing_domain` vhosts documented and automated
-- [ ] `nginx -s reload` wired to site deploy
-- [ ] Private surface (3020 / 8020 / 5555) verified firewalled/loopback-bound after deploy
-- [ ] CORS verified against the real origin before first remote deploy
-- [ ] Runbook covering first deploy, redeploy, and rollback
+- [x] systemd units for the uvicorn API and the worker, with restart-on-failure —
+      `kill -9` pid 663235, systemd restarted it as 663473, `/health` ok; both units `enabled`
+- [x] Idempotent deploy path; aborts non-zero if `check-ports.sh` fails — two consecutive runs
+      rc=0 and healthy; with a squatter on 3020 the run exits **1**, names the port, creates no
+      release
+- [x] nginx base config: `/api/private/products` returns **200 direct / 404 through nginx**;
+      `/api/funnel/<real slug>/visit` returns **201 both ways**; `/api/stripe/webhook` reaches
+      the app (400 on an empty body)
+- [x] TLS documented + automated (`enable-tls.sh`); the ACME challenge path is **proven served
+      past the #78 dotfile deny** (`/.well-known/acme-challenge/proof.txt` returns its content
+      while `/.hidden/secret` still 403s). Issuance itself is untested — no domain resolves here
+- [x] `nginx -s reload` wired to site deploy — `deploy_site` as `sme` wrote the vhost and
+      reloaded via the sudoers grant; the page then served 200 from the workspace tree
+- [x] Private surface verified loopback-bound — listeners are `127.0.0.1:8020/3020`, and both
+      ports time out from off-box
+- [x] CORS verified against the real origin — `verify-deploy.sh` preflight
+- [x] Runbook covering first deploy, redeploy, rollback, TLS, troubleshooting
+
+## Defects found by actually deploying (all fixed)
+
+Seven, none of which a file review would have caught. Six are one pattern — **privilege and path
+assumptions that only fail when a different user runs the code**:
+
+1. `StartLimitIntervalSec`/`StartLimitBurst` in `[Service]` — systemd ignores them there with only
+   a log warning, so the crash-loop throttle silently did not exist.
+2. `/usr/local/bin/uv` is a symlink into `/home/podcastfy/.local/bin` (0750) — a per-user install
+   wearing a system-path costume.
+3. Building as root put the venv's interpreter under `/root/.local/share/uv` (0700) → `203/EXEC`
+   with every file on disk looking correct. **Fixed structurally: build user == runtime user.**
+4. `provision.sh` preserved the live env file (correct — secrets) but therefore never delivered
+   newly-required keys → `unbound variable` on the second provision.
+5. `ExecStart=${VAR} ...` — systemd forbids a variable as the *first* token, failing with the same
+   `203/EXEC` as a wrong path.
+6. `sme` cannot write root-owned `/etc/nginx/sites-enabled`; `ReadWritePaths=` relaxes systemd's
+   sandbox but grants no filesystem permission.
+7. `/etc/sme` was `root:root` 0750, so `sme` could not traverse to the env file its own group
+   ownership promised it could read.
+
+And one weakness in my own verification: `verify-deploy.sh` asserted "funnel is proxied" from a
+status code, but nginx-blocked and app-not-found both return 404 — the check passed identically
+whether the allowlist worked or nginx swallowed everything. Now discriminates on the response body.
 
 ## Known limitations (for the PR)
 
