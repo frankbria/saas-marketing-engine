@@ -23,6 +23,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest==8.4.1",
+    "pytest-cov==7.0.0",
     "httpx==0.28.1",
     "ruff==0.12.5",
     "black==25.1.0",
@@ -42,3 +43,39 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+# NFR-7 (S0.6, #81): coverage is measured over the engine logic in `app/` and gated in CI.
+# Coverage flags are NOT in `addopts` on purpose — local runs are targeted (see backend/README.md)
+# and would trip `fail_under` on a single-file run. CI passes `--cov` explicitly.
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+# The table lists only files with gaps; 100%-covered files are summarised as a count.
+skip_covered = true
+# Two decimals: the gate is compared against the exact total, so the exact total is what the
+# report should print. A bare "92%" hides whether the next commit has 0.4 points of room.
+precision = 2
+# Ratchet, not an aspiration. NFR-7 asks for >85%.
+#
+# The gate tracks the CI number — CI is the authoritative environment, and the only one that
+# runs everything short of the paid-API tests (661 passed / 11 skipped on 2026-08-10, all 11
+# gated on SME_ANTHROPIC_API_KEY or SME_STRIPE_API_KEY). A dev box without Redis, Postgres
+# and those env vars reads *lower*; do not retune this to a local number.
+#
+# Measured 2026-08-10 in CI: 92.13%. Gate at 92.
+#
+# Raise this when coverage rises; never lower it to make a red build green — add the tests.
+# `uv run coverage report` is what enforces it (see .github/workflows/ci.yml): pytest-cov does
+# NOT reliably fail the run on a config-only `fail_under` — it printed FAIL and still exited 0
+# in CI. coverage.py's own CLI exits 2. Do not "simplify" the gate back into the pytest step.
+fail_under = 92
+exclude_also = [
+    # Typing-only branches never execute at runtime.
+    "if TYPE_CHECKING:",
+    # Abstract/unimplemented seams are contracts, not behaviour.
+    "raise NotImplementedError",
+    # Script entrypoints are exercised by running the process, not by pytest.
+    'if __name__ == "__main__":',
+]

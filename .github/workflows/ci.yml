@@ -52,13 +52,30 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+      # The media suites (video/podcast render, media queue round-trips) self-skip without
+      # ffmpeg and a DejaVu font, which a GitHub runner does not ship. Skipping them here left
+      # 13 tests unrun and the render paths uncovered — found via `-rs` while wiring up S0.6.
+      - name: Media toolchain (ffmpeg + DejaVu)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
       - run: uv sync
       - name: Lint (ruff)
         run: uv run ruff check .
       - name: Format check (black)
         run: uv run black --check .
-      - name: Tests (pytest)
-        run: uv run pytest
+      # NFR-7 (S0.6, #81). Two steps, one job each:
+      #   pytest  -> fails on test failures.   `--cov-fail-under=0` disables pytest-cov's own
+      #              threshold so a coverage regression cannot surface as a confusing test-step
+      #              failure. It only collects the data.
+      #   coverage -> fails on coverage.       This is the gate.
+      # pytest-cov's config-only `fail_under` enforcement is not dependable: it printed
+      # "FAIL Required test coverage of 90.0% not reached" against 89.95% and still exited 0 in
+      # this workflow. coverage.py's CLI exits 2 and reads the same `[tool.coverage.report]`
+      # block, so `uv run coverage report` gates identically on a dev box.
+      # `-rs` keeps the skip list on the record — it is what exposed the missing ffmpeg.
+      - name: Tests (pytest, with coverage data)
+        run: uv run pytest -rs --cov=app --cov-report= --cov-fail-under=0
+      - name: Coverage report + NFR-7 gate
+        run: uv run coverage report
 
   frontend:
     runs-on: ubuntu-latest
@@ -79,5 +96,7 @@ jobs:
         run: npm run lint
       - name: Typecheck (tsc)
         run: npm run typecheck
-      - name: Tests (vitest)
-        run: npm run test
+      # S0.6 (#81): reported, not gated — the dashboard's tested surface is `lib/` and the
+      # number is here to be watched, not to block a PR. See dashboard/vitest.config.ts.
+      - name: Tests + coverage (vitest)
+        run: npm run test:coverage

@@ -24,11 +24,13 @@ PRD.md · TECH_SPEC.md · USER_STORIES.md · tasks/todo.md
 cd backend && uv sync
 uv run uvicorn app.main:app --reload --port 8010   # http://localhost:8010/health
 uv run pytest
+uv run pytest -rs --cov=app --cov-report= && uv run coverage report --fail-under=0  # coverage; gate is CI's (backend/README.md)
 
 # dashboard
 cd dashboard && npm install
 npm run dev                                         # http://localhost:3010
 npm run test && npm run typecheck && npm run lint
+npm run test:coverage                               # coverage over lib/ (reported, not gated)
 ```
 
 Install hooks once: `pre-commit install` (runs ruff + black on backend, eslint + tsc on dashboard).

@@ -14,6 +14,54 @@ uv run pytest                 # tests
 uv run ruff check . && uv run black --check .   # lint + format
 ```
 
+### Coverage (NFR-7, S0.6)
+
+```bash
+uv run pytest -rs --cov=app --cov-report=       # collect coverage data (-rs shows what skipped)
+uv run coverage report --fail-under=0           # just the number — use this on a dev box
+uv run coverage html                            # htmlcov/index.html for the line detail
+
+uv run coverage report                          # apply the real gate (needs CI's services, below)
+```
+
+**`coverage report` is the gate, not pytest.** pytest-cov prints `FAIL Required test coverage
+… not reached` but does not reliably exit non-zero on a config-only `fail_under` — it did exactly
+that in CI and the build went green. coverage.py's CLI exits 2. CI runs the two steps above for
+that reason; don't fold the gate back into the pytest invocation.
+
+The threshold lives in `pyproject.toml` (`[tool.coverage.report] fail_under`), so local and CI
+gate identically. It is a **ratchet**: raise it when coverage rises, never lower it to make a red
+build green — add the tests instead.
+
+NFR-7 asks for >85%. **CI is the authoritative number** and the gate is **92** (CI measured
+92.13% on 2026-08-10: 661 passed, 11 skipped).
+
+**Expect your local number to read lower than CI's, and don't chase it.** CI runs everything
+except the 11 paid-API tests; a dev box additionally skips whatever it lacks, so a bare
+`uv run coverage report` on a laptop fails the gate through no fault of your change — that is
+why the recipe above uses `--fail-under=0` locally. Judge a change by whether it *added* uncovered
+lines (`coverage html` shows exactly which), and let CI own the threshold.
+
+To actually reproduce CI's number, supply what CI supplies:
+
+| Skipped without it | Provide |
+|---|---|
+| video/podcast render, media queue | `ffmpeg` + `ffprobe` on PATH, `fonts-dejavu-core` |
+| Celery round-trips | `SME_CELERY_BROKER_URL` (see `infra/compose.dev.yml`) |
+| Postgres path | `SME_TEST_POSTGRES_URL` |
+| brand kit, pricing, briefs, critic | `SME_ANTHROPIC_API_KEY` (real API calls — skipped in CI too) |
+| checkout, Stripe setup | `SME_STRIPE_API_KEY` (real API calls — skipped in CI too) |
+
+`-rs` on a pytest run prints exactly which of these are skipping and why. CI passes it always —
+a silently-skipped suite is how the render paths went uncovered in CI unnoticed.
+
+Coverage flags are deliberately **not** in `addopts`: `fail_under` would fail any targeted
+single-file run. Exclusions are inline `# pragma: no cover` with a reason on the same line —
+a pragma on a bare comment line excludes nothing.
+
+> Under WSL2 the suite is fsync-bound (~84 min). Add `--basetemp=/dev/shm/pytest-sme` to put the
+> per-test SQLite files on tmpfs — same tests, ~40s.
+
 Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `channels/`, `ai/`,
 `secrets/`) is populated by later phase issues.
 
