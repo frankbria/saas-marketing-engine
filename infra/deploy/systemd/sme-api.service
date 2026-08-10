@@ -43,7 +43,18 @@ RestartSec=5
 
 # The workspace is the nginx document root (S4.5.1/#78), so the service must be able to write it
 # while staying out of everything else on a box it shares with four other projects.
-NoNewPrivileges=true
+#
+# NoNewPrivileges is deliberately NOT set here. This service must run exactly one privileged
+# action — `sudo /usr/local/sbin/sme-nginx-reload`, so a newly generated vhost actually reaches
+# the wire — and NoNewPrivileges makes the kernel refuse every setuid exec, so sudo fails with
+# "the 'no new privileges' flag is set". The failure is quiet in the worst way: the crank's
+# setup_site job errors on every retry and the site is never served, while the unit looks
+# correctly hardened. You cannot both forbid privilege escalation and require a sudo call.
+#
+# The compensating control is that the grant is narrow by construction: a single root-owned
+# script at a fixed path outside the deploy checkout, allowed via one visudo-validated NOPASSWD
+# rule, which runs `nginx -t` before reloading. sme-dashboard keeps NoNewPrivileges=true — it
+# needs no privileged action at all.
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true

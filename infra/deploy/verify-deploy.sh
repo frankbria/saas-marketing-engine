@@ -57,6 +57,31 @@ else
     fail "ufw is not active — the private surface has no boundary (NFR-1)"
 fi
 
+say "the API service can actually reload nginx"
+# Not a hypothetical. `deploy_site` shells out to SME_NGINX_RELOAD_COMMAND from inside the API
+# process, so if the unit's sandbox blocks that escalation, every generated vhost is written and
+# never served — and the unit looks *more* hardened while the crank silently fails. This assertion
+# exists because that regression is invisible from outside: the service is active, /health is ok,
+# and only a real setup_site run would reveal it.
+NNP="$(systemctl show sme-api -p NoNewPrivileges --value 2>/dev/null)"
+case "$SME_NGINX_RELOAD_COMMAND" in
+    *sudo*)
+        if [ "$NNP" = "yes" ]; then
+            fail "sme-api has NoNewPrivileges=yes but its reload command uses sudo — the kernel will refuse it"
+        else
+            # Exercise it for real under the service's own uid rather than trusting the property.
+            if systemd-run --quiet --uid=sme --property=NoNewPrivileges="$NNP" --wait --collect \
+                --pipe /bin/sh -c "$SME_NGINX_RELOAD_COMMAND" >/dev/null 2>&1; then
+                pass "the service user can run the nginx reload under the unit's sandbox"
+            else
+                fail "the reload command failed when run as sme under the unit's sandbox"
+            fi
+        fi
+        ;;
+    "") fail "SME_NGINX_RELOAD_COMMAND is empty — deploy_site would write vhosts and never serve them" ;;
+    *)  pass "reload command needs no escalation ($SME_NGINX_RELOAD_COMMAND)" ;;
+esac
+
 say "api health"
 if curl -fsS --max-time 5 "http://127.0.0.1:$SME_API_PORT/health" | grep -q '"ok"'; then
     pass "GET /health returns ok"
