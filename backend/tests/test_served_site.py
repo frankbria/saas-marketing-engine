@@ -115,8 +115,16 @@ def _blog_item(session, product, channel, *, slug="my-post", title="My Post") ->
     return item
 
 
-def _podcast_item(session, product, channel) -> ContentItem:
-    rel = f"{product.slug}/media/podcast/job-1/episode.mp3"
+def _podcast_item(
+    session,
+    product,
+    channel,
+    *,
+    title="Episode One",
+    job="job-1",
+    scheduled_for=datetime(2026, 7, 1, 12, 0, tzinfo=UTC),
+) -> ContentItem:
+    rel = f"{product.slug}/media/podcast/{job}/episode.mp3"
     path = Path(settings.workspace_root) / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"ID3fake-mp3-bytes")
@@ -125,11 +133,11 @@ def _podcast_item(session, product, channel) -> ContentItem:
         channel_id=channel.id,
         content_type="podcast",
         status=ContentItemStatus.SCHEDULED,
-        title="Episode One",
+        title=title,
         body="Show notes body.",
         meta_json=json.dumps({"description": "A great episode."}),
         media_ref=rel,
-        scheduled_for=datetime(2026, 7, 1, 12, 0, tzinfo=UTC),
+        scheduled_for=scheduled_for,
     )
     session.add(item)
     session.commit()
@@ -311,3 +319,101 @@ def test_published_episode_and_feed_are_reachable_under_the_served_root(session,
     assert len(enclosures) == 1
     audio_url = enclosures[0].attrib["url"]
     assert _served_path(served_root, audio_url).is_file(), f"{audio_url} is not served"
+
+
+def _publish_episode(session, product, channel, item):
+    """Publish an episode and mark it published, as the crank's publish pass would.
+
+    `retract_item` requires `published` status and an `external_url` — mirroring the blog test.
+    """
+    result = PodcastAdapter().publish(item, product, channel, None)
+    item.status = ContentItemStatus.PUBLISHED
+    item.external_url = result.external_url
+    session.add(item)
+    session.commit()
+    return result
+
+
+def _feed_enclosure_urls(served_root) -> list[str]:
+    """Enclosure URLs advertised by the served feed. Parsing doubles as a well-formedness check —
+    `ET.fromstring` raises on malformed XML, which is what a broken rebuild would emit."""
+    feed = served_root / "podcast" / "feed.xml"
+    assert feed.is_file(), "feed.xml is missing from the served root"
+    return [
+        enclosure.attrib["url"]
+        for enclosure in ET.fromstring(feed.read_text()).findall(".//item/enclosure")
+    ]
+
+
+def test_retracted_episode_is_removed_from_the_served_root_and_the_feed(session, workspace):
+    """S4.5.2 (#86): the delete-time feed rebuild is the uncovered half of podcast retract.
+
+    Unlinking the MP3 is the easy part and was already covered. The part with no served-root test
+    is `_rebuild_feed` running *on delete*: break its glob or its sort and the audio file is gone
+    while `feed.xml` still advertises the `<enclosure>`. Podcast clients then retry a dead URL
+    forever, and the dashboard shows a clean, successful retract. Assert on the feed, not just the
+    files, or the regression is invisible.
+    """
+    product = _product(session)
+    channel = _channel(session, product.id, ChannelType.PODCAST)
+    served_root = _deploy(product)
+
+    keeper = _podcast_item(session, product, channel, title="Keeper", job="job-1")
+    doomed = _podcast_item(
+        session,
+        product,
+        channel,
+        title="Doomed",
+        job="job-2",
+        scheduled_for=datetime(2026, 7, 8, 12, 0, tzinfo=UTC),
+    )
+    _publish_episode(session, product, channel, keeper)
+    doomed_result = _publish_episode(session, product, channel, doomed)
+
+    assert len(_feed_enclosure_urls(served_root)) == 2
+
+    # The three artifacts the adapter writes, all under the served root.
+    doomed_page = _served_path(served_root, doomed_result.external_url)
+    doomed_slug = doomed_page.name.removesuffix(".html")
+    doomed_audio = served_root / "podcast" / f"{doomed_slug}.mp3"
+    doomed_sidecar = served_root / "podcast" / f"{doomed_slug}.json"
+    assert doomed_page.is_file() and doomed_audio.is_file() and doomed_sidecar.is_file()
+
+    retract_item(session, doomed)
+
+    # 1. every artifact is gone from the served root
+    assert not doomed_page.exists()
+    assert not doomed_audio.exists()
+    assert not doomed_sidecar.exists()
+
+    # 2. the feed no longer advertises it — the assertion the suite was missing
+    remaining = _feed_enclosure_urls(served_root)
+    assert not any(
+        doomed_slug in url for url in remaining
+    ), f"feed.xml still advertises the retracted episode: {remaining}"
+
+    # 3. the rebuild pruned rather than truncated: the other episode survives, and its enclosure
+    #    still resolves to a real file under the served root
+    assert len(remaining) == 1
+    assert _served_path(
+        served_root, remaining[0]
+    ).is_file(), f"surviving enclosure {remaining[0]} is not served"
+
+
+def test_retracting_the_last_episode_leaves_a_well_formed_empty_feed(session, workspace):
+    """The prune-to-nothing case: an empty feed is correct, a missing or malformed one is not.
+
+    A subscribed client keeps polling feed.xml after the last episode is pulled; it must still
+    parse, and it must still carry the channel metadata rather than being deleted outright.
+    """
+    product = _product(session)
+    channel = _channel(session, product.id, ChannelType.PODCAST)
+    served_root = _deploy(product)
+    item = _podcast_item(session, product, channel)
+    _publish_episode(session, product, channel, item)
+
+    retract_item(session, item)
+
+    assert _feed_enclosure_urls(served_root) == []
+    root = ET.fromstring((served_root / "podcast" / "feed.xml").read_text())
+    assert root.findtext("./channel/title") == f"{product.name} Podcast"
