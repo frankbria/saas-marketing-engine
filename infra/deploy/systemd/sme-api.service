@@ -29,7 +29,12 @@ EnvironmentFile=/etc/sme/sme.env
 # ${SME_UV_BIN}, not /usr/local/bin/uv: on this box that path is a symlink into
 # /home/podcastfy/.local/bin (mode 750), which the `sme` user cannot traverse — exec fails
 # with 203/EXEC. provision.sh installs a copy somewhere root-owned and world-readable.
-ExecStart=${SME_UV_BIN} run uvicorn app.main:app --host 127.0.0.1 --port ${SME_API_PORT}
+#
+# Wrapped in `sh -c` because systemd forbids a variable as the FIRST token of ExecStart — it is
+# expanded, but not used to resolve the binary, so a bare `${SME_UV_BIN} run ...` fails with
+# 203/EXEC just as if the path were wrong. `exec` keeps the shell from lingering as an extra
+# process, so systemd still supervises uvicorn directly.
+ExecStart=/bin/sh -c 'exec ${SME_UV_BIN} run uvicorn app.main:app --host 127.0.0.1 --port ${SME_API_PORT}'
 
 # DoD-2 requires unattended operation for >=2 weeks. Restart on *any* exit, not just failure: a
 # clean-but-unexpected exit still means the crank stopped running.
