@@ -17,6 +17,7 @@ Two invariants get most of the attention here because they are the ones that wou
 Real app, real SQLite, no mocks — same shape as test_crank.py / test_qa_gate.py.
 """
 
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -35,7 +36,12 @@ from app.models import (
     LifecycleState,
     Product,
 )
-from app.modules.crank.crank import MANUAL_CRANK_KIND, ContentType, enqueue_due_cranks
+from app.modules.crank.crank import (
+    MANUAL_CRANK_KIND,
+    ContentType,
+    enqueue_due_cranks,
+    enqueue_manual_crank,
+)
 from app.worker import run_due_jobs
 
 
@@ -127,13 +133,7 @@ def test_unknown_product_is_404(client):
 
 
 @pytest.mark.parametrize(
-    "state",
-    [
-        LifecycleState.DRAFT,
-        LifecycleState.STRATEGY,
-        LifecycleState.SETUP_DONE,
-        LifecycleState.QA,
-    ],
+    "state", [state for state in LifecycleState if state != LifecycleState.LIVE]
 )
 def test_refuses_unless_the_product_is_live(client, session, state):
     product = _product(session, state=state, slug=f"p-{state}")
@@ -192,6 +192,49 @@ def test_an_in_flight_crank_on_another_product_does_not_block(client, session):
     session.commit()
 
     assert client.post(f"/api/private/crank/{product.id}").status_code == 202
+
+
+def test_concurrent_enqueues_produce_exactly_one_crank(session):
+    """The check and the insert must be atomic against each other.
+
+    The dashboard POST and the scheduler's `_crank_tick` run in the same process on different
+    threads, so a plain read-then-write lets both observe an empty queue and both enqueue —
+    a doubled fan-out that spends tokens twice and publishes twice. Hammering the guarded
+    entry point from several threads at once fails loudly without the lock.
+    """
+    product = _product(session)
+    _channel(session, product.id)
+    results: list[JobRun | None] = []
+    barrier = threading.Barrier(8)
+
+    def attempt() -> None:
+        barrier.wait()  # release all threads into the critical section together
+        results.append(enqueue_manual_crank(session, product.id))
+
+    threads = [threading.Thread(target=attempt) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sum(job is not None for job in results) == 1
+    assert len(_jobs(session, MANUAL_CRANK_KIND, product.id)) == 1
+
+
+def test_losing_the_enqueue_race_is_reported_as_409(client, session, monkeypatch):
+    """The route's own pre-check can pass and the guarded enqueue still refuse.
+
+    That happens when the scheduler's tick commits between the two. Driving it with real threads
+    would be a timing test; patching the seam pins the branch deterministically.
+    """
+    product = _product(session)
+    _channel(session, product.id)
+    monkeypatch.setattr("app.api.private.crank.enqueue_manual_crank", lambda *args, **kwargs: None)
+
+    response = client.post(f"/api/private/crank/{product.id}")
+
+    assert response.status_code == 409
+    assert "concurrently" in response.json()["detail"]
 
 
 # --- cadence is not skewed -------------------------------------------------------------------

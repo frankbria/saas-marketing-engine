@@ -23,19 +23,15 @@ the pacing rules and could burst several posts onto real channels at once.
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from app.db import get_session
-from app.models import Channel, ConnectState, JobRun, JobStatus, LifecycleState, Product
-from app.modules.crank.crank import MANUAL_CRANK_KIND, eligible_channels
-from app.worker import enqueue
+from app.models import Channel, ConnectState, LifecycleState, Product
+from app.modules.crank.crank import eligible_channels, enqueue_manual_crank, in_flight_crank
 
 router = APIRouter(prefix="/crank", tags=["crank"])
 
 SessionDep = Annotated[Session, Depends(get_session)]
-
-_IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
-_CRANK_KINDS = ("crank", MANUAL_CRANK_KIND)
 
 
 def _ineligibility_reason(channel: Channel) -> str:
@@ -76,13 +72,9 @@ def trigger_crank(
             "the crank runs only after go-live",
         )
 
-    in_flight = session.exec(
-        select(JobRun).where(
-            JobRun.product_id == product_id,
-            JobRun.kind.in_(_CRANK_KINDS),  # type: ignore[attr-defined]
-            JobRun.status.in_(_IN_FLIGHT),  # type: ignore[attr-defined]
-        )
-    ).first()
+    # Reported up front so the operator gets the job id they are waiting on. The authoritative,
+    # race-free check is inside `enqueue_manual_crank` below — this one is for the message.
+    in_flight = in_flight_crank(session, product_id)
     if in_flight is not None:
         raise HTTPException(
             status_code=409,
@@ -102,9 +94,14 @@ def trigger_crank(
     elif not eligible_channels(session, product_id):
         raise HTTPException(
             status_code=409,
-            detail="product has no eligible channels to crank "
-            "(they must be enabled, autonomous, unpaused, and connected)",
+            detail="product has no eligible channels to crank (they must be enabled, "
+            "autonomous, unpaused, and not in a failed connection state)",
         )
 
-    job = enqueue(session, MANUAL_CRANK_KIND, product_id=product_id, channel_id=channel_id)
+    job = enqueue_manual_crank(session, product_id, channel_id)
+    if job is None:  # lost the race against a concurrent click or the scheduler's tick
+        raise HTTPException(
+            status_code=409,
+            detail="a crank was enqueued for this product concurrently; wait for it to finish",
+        )
     return {"job_id": job.id, "status": job.status}

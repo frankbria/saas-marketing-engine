@@ -16,12 +16,21 @@ the cadence trigger + fan-out. S4.1 established that the fan-out carries each ce
 spends no tokens.
 """
 
+import threading
 from datetime import datetime, timedelta
 from enum import StrEnum
 
 from sqlmodel import Session, select
 
-from app.models import Channel, ChannelType, ConnectState, JobRun, LifecycleState, Product
+from app.models import (
+    Channel,
+    ChannelType,
+    ConnectState,
+    JobRun,
+    JobStatus,
+    LifecycleState,
+    Product,
+)
 from app.worker import enqueue, handler
 
 WEEKLY_SECONDS = 7 * 24 * 3600
@@ -35,6 +44,48 @@ WEEKLY_SECONDS = 7 * 24 * 3600
 # with no query change and, more importantly, no schema change: v1 has no Alembic (`init_db` is
 # `create_all`), so a new column would simply not exist on an already-deployed database.
 MANUAL_CRANK_KIND = "crank_manual"
+
+_IN_FLIGHT = (JobStatus.QUEUED, JobStatus.RUNNING)
+_CRANK_KINDS = ("crank", MANUAL_CRANK_KIND)
+
+# Serialises "is a crank already in flight for this product?" against the insert that follows.
+# Without it the check and the insert are a TOCTOU pair: the dashboard POST and the scheduler's
+# `_crank_tick` run in the same process on different threads (APScheduler BackgroundScheduler +
+# uvicorn's threadpool for sync routes), so both can observe an empty queue and both enqueue —
+# a doubled fan-out that spends tokens twice and publishes twice.
+#
+# ponytail: one process-wide lock, not per-product, and held across the commit. The deployed API
+# is a single uvicorn process with no `--workers` (infra/deploy/systemd/sme-api.service), so a
+# process-local lock is sufficient and the contention is one short transaction per crank. The
+# moment the API runs more than one worker this stops being enough — the upgrade path is a unique
+# partial index on (product_id, kind) for in-flight rows, which needs the migration story v1
+# does not have yet.
+_ENQUEUE_LOCK = threading.Lock()
+
+
+def in_flight_crank(session: Session, product_id: int) -> JobRun | None:
+    """The crank already queued or running for this product, of either kind, if any."""
+    return session.exec(
+        select(JobRun).where(
+            JobRun.product_id == product_id,
+            JobRun.kind.in_(_CRANK_KINDS),  # type: ignore[attr-defined]
+            JobRun.status.in_(_IN_FLIGHT),  # type: ignore[attr-defined]
+        )
+    ).first()
+
+
+def enqueue_manual_crank(
+    session: Session, product_id: int, channel_id: int | None = None
+) -> JobRun | None:
+    """Enqueue an operator-triggered crank, or return None if one is already in flight.
+
+    The check and the insert happen under `_ENQUEUE_LOCK` so two clicks — or a click landing on
+    the same tick as the scheduler — cannot both get past the check.
+    """
+    with _ENQUEUE_LOCK:
+        if in_flight_crank(session, product_id) is not None:
+            return None
+        return enqueue(session, MANUAL_CRANK_KIND, product_id=product_id, channel_id=channel_id)
 
 
 class ContentType(StrEnum):
@@ -64,23 +115,30 @@ def _cadence_seconds(product: Product) -> int:
 
 
 def enqueue_due_cranks(session: Session, now: datetime) -> list[JobRun]:
-    """Enqueue a `crank` for each LIVE product whose cadence has elapsed. Returns the new rows."""
-    products = session.exec(
-        select(Product).where(Product.lifecycle_state == LifecycleState.LIVE)
-    ).all()
-    enqueued: list[JobRun] = []
-    for product in products:
-        cutoff = now - timedelta(seconds=_cadence_seconds(product))
-        recent_crank = session.exec(
-            select(JobRun).where(
-                JobRun.product_id == product.id,
-                JobRun.kind == "crank",
-                JobRun.created_at >= cutoff,
-            )
-        ).first()
-        if recent_crank is None:  # never cranked, or last crank older than the cadence window
-            enqueued.append(enqueue(session, "crank", product_id=product.id))
-    return enqueued
+    """Enqueue a `crank` for each LIVE product whose cadence has elapsed. Returns the new rows.
+
+    Takes the same lock as the manual trigger (S4.1.1) so a tick landing while an operator is
+    clicking cannot interleave with that check and enqueue a second crank for the product.
+    """
+    with _ENQUEUE_LOCK:
+        products = session.exec(
+            select(Product).where(Product.lifecycle_state == LifecycleState.LIVE)
+        ).all()
+        enqueued: list[JobRun] = []
+        for product in products:
+            cutoff = now - timedelta(seconds=_cadence_seconds(product))
+            # Due-ness looks at `crank` only, never MANUAL_CRANK_KIND — an operator's off-cadence
+            # run must not cost the product its next scheduled cycle.
+            recent_crank = session.exec(
+                select(JobRun).where(
+                    JobRun.product_id == product.id,
+                    JobRun.kind == "crank",
+                    JobRun.created_at >= cutoff,
+                )
+            ).first()
+            if recent_crank is None:  # never cranked, or last crank older than the cadence window
+                enqueued.append(enqueue(session, "crank", product_id=product.id))
+        return enqueued
 
 
 def eligible_channels(
