@@ -48,7 +48,43 @@ if [ ! -f "$ENV_FILE" ]; then
     install -o root -g "$SME_USER" -m 640 "$DEPLOY_DIR/sme.env.example" "$ENV_FILE"
     echo "installed $ENV_FILE from the example — FILL IN THE SECRETS BEFORE DEPLOYING"
 else
-    echo "$ENV_FILE already exists — left untouched (it holds live secrets)"
+    # Reconcile, don't replace. The live file holds secrets, so it can never be overwritten — but
+    # "leave it alone" alone is wrong too: a release that introduces a new required key would then
+    # fail at deploy time with `unbound variable` on a box that was provisioned before the key
+    # existed. (That is exactly how SME_UV_BIN broke the first deploy.) Append only keys that are
+    # missing; never touch a value that is already set.
+    ADDED=0
+    while IFS= read -r line; do
+        case "$line" in
+            [A-Z_]*=*) ;;
+            *) continue ;;
+        esac
+        key="${line%%=*}"
+        if ! grep -q "^${key}=" "$ENV_FILE"; then
+            printf '%s\n' "$line" >> "$ENV_FILE"
+            echo "  + added missing key $key"
+            ADDED=$((ADDED + 1))
+        fi
+    done < "$DEPLOY_DIR/sme.env.example"
+    if [ "$ADDED" -eq 0 ]; then
+        echo "$ENV_FILE already has every key from the example — values left untouched"
+    else
+        echo "$ENV_FILE: added $ADDED missing key(s); existing values untouched"
+    fi
+    # A key whose *value* drifted from the example default is not something a script should
+    # silently rewrite — it might be a deliberate local override, or it might be a stale default
+    # (SME_NODE_BIN pointed into /root before we learned the service user cannot read it). Say so
+    # and let a human decide.
+    while IFS= read -r line; do
+        case "$line" in
+            SME_UV_BIN=*|SME_NODE_BIN=*|SME_NGINX_RELOAD_COMMAND=*) ;;
+            *) continue ;;
+        esac
+        key="${line%%=*}"
+        want="${line#*=}"
+        have="$(grep "^${key}=" "$ENV_FILE" | head -1)"; have="${have#*=}"
+        [ "$have" = "$want" ] || echo "  ! $key is '$have' but the example now says '$want' — review"
+    done < "$DEPLOY_DIR/sme.env.example"
 fi
 # shellcheck disable=SC1090
 set -a; . "$ENV_FILE"; set +a
