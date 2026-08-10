@@ -1,0 +1,47 @@
+[Unit]
+# The engine. One uvicorn process serves BOTH API surfaces (public funnel + private dashboard);
+# nginx is what makes the split real on the wire (PORTS.md). This process also runs the in-process
+# worker loop and the APScheduler ticks — crank, publish, heartbeat digest, media provisioner,
+# video/podcast render collection, reach poll (app/scheduler.py). So "restart the API" and
+# "restart the worker" are the same action here, and there is no separate worker unit: the only
+# Celery consumer is the ephemeral GPU pod at the provider, which this box does not run.
+Description=SaaS Marketing Engine API + in-process worker/scheduler
+Documentation=https://github.com/frankbria/saas-marketing-engine/blob/main/infra/deploy/RUNBOOK.md
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=sme
+Group=sme
+WorkingDirectory=/opt/sme/current/backend
+EnvironmentFile=/etc/sme/sme.env
+
+# --host 127.0.0.1 is load-bearing, not a default: NFR-1 ships no auth on /api/private/*, so the
+# loopback bind plus ufw IS the boundary. Binding 0.0.0.0 would expose the operator API to the
+# internet the moment someone opened the port. verify-deploy.sh asserts this after every deploy.
+ExecStart=/usr/local/bin/uv run uvicorn app.main:app --host 127.0.0.1 --port ${SME_API_PORT}
+
+# DoD-2 requires unattended operation for >=2 weeks. Restart on *any* exit, not just failure: a
+# clean-but-unexpected exit still means the crank stopped running.
+Restart=always
+RestartSec=5
+# Don't let a crash-looping process spin forever silently — but StartLimitAction=none keeps
+# systemd from giving up permanently, since the operator may not look for days.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+# The workspace is the nginx document root (S4.5.1/#78), so the service must be able to write it
+# while staying out of everything else on a box it shares with four other projects.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/sme /etc/nginx/sites-enabled /etc/nginx/snippets
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sme-api
+
+[Install]
+WantedBy=multi-user.target

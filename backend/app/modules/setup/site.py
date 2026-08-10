@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -134,6 +136,7 @@ def deploy_site(product: Product, site_dir: Path) -> Path:
         )
     root = Path(settings.nginx_sites_root)
     root.mkdir(parents=True, exist_ok=True)
+    snippets = Path(settings.nginx_snippets_root)
     # ponytail: HTTP-only vhost; TLS termination + `nginx -s reload` are operational (S2.7/S6.4).
     #
     # `$uri.html` maps the extensionless post URLs BlogAdapter returns (`/blog/<slug>`) onto the
@@ -151,6 +154,21 @@ def deploy_site(product: Product, site_dir: Path) -> Path:
         f"    root {site_dir};\n"
         f"    index index.html;\n"
         f"    disable_symlinks on;\n"
+        # TLS lives in a *wildcard* include, not in this file (S0.5/#80). This file is regenerated
+        # on every setup_site run, so certbot's `--nginx` plugin edits would be silently erased,
+        # leaving a valid certificate nobody serves. A wildcard include is legal when it matches
+        # nothing, so the same generated vhost works before and after a cert exists — and
+        # enable-tls.sh owns the directory it points at.
+        f"    include {snippets}/sme-tls/{domain}/*.conf;\n"
+        # ACME before the dotfile deny. `^~` (inside the snippet) makes nginx resolve this prefix
+        # location ahead of any regex location, which is what stops the `location ~ /\.` deny
+        # below from swallowing /.well-known/acme-challenge/ and silently failing every
+        # certificate issuance (#78's dotfile deny; predicted in #80's comment).
+        f"    include {snippets}/sme-acme.conf;\n"
+        # The public API allowlist: only /api/funnel/* and /api/stripe/webhook are proxied, and
+        # everything else under /api/ 404s. v1 has no auth on /api/private/*, so this include is
+        # the only thing keeping the operator API off the internet.
+        f"    include {snippets}/sme-public-api.conf;\n"
         f"    location ~ /\\. {{ deny all; }}\n"
         f"    location ~ \\.tmp$ {{ deny all; }}\n"
         f"    location /blog/ {{ try_files $uri $uri.html =404; }}\n"
@@ -159,7 +177,32 @@ def deploy_site(product: Product, site_dir: Path) -> Path:
         f"}}\n"
     )
     (root / f"{domain}.conf").write_text(vhost, encoding="utf-8")
+    _reload_nginx()
     return site_dir
+
+
+def _reload_nginx() -> None:
+    """Make nginx re-read the vhost just written (S0.5/#80).
+
+    Before this, `deploy_site` wrote the config and left the reload as an "operational" step — so
+    a freshly deployed site was live in the filesystem and invisible on the wire until a human
+    remembered. Empty command (dev/CI default) is a no-op; production points it at the
+    tested-first helper.
+
+    A failed reload raises. It is tempting to log-and-continue, since the vhost *is* written — but
+    that reports a deployed site nobody can reach, which is the same class of silent failure as
+    #78. The file is deliberately left on disk so the operator can fix the cause and reload by
+    hand instead of re-running a job that spends tokens.
+    """
+    command = settings.nginx_reload_command.strip()
+    if not command:
+        return
+    result = subprocess.run(shlex.split(command), capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"nginx reload failed ({result.returncode}): "
+            f"{(result.stderr or result.stdout or '').strip()[:500]}"
+        )
 
 
 def _real_generate(

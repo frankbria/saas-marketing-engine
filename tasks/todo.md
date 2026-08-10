@@ -1,90 +1,113 @@
-# S6.2.1 — Real reach ingestion; make the zero-reach alert able to fire (issue #79)
+# S0.5 — VPS deploy automation (issue #80)
 
-**Branch:** `feature/issue-79-real-reach-ingestion` · **Plan source:** self-authored.
+**Branch:** `feature/issue-80-vps-deploy-automation` · **Plan source:** self-authored from the
+issue's acceptance criteria + a live survey of the target box (the issue has AC but no step plan).
 
-## The defect
+## What is actually missing
 
-`publish_scheduled` writes one `MetricEvent(stage=IMPRESSION, value=1)` per published item
-(`crank/publish.py:249`) and `heartbeat._reach()` sums those same rows (`heartbeat.py:64`). Nothing
-polls any platform. So:
+`infra/deploy/` holds only `PORTS.md` and `check-ports.sh`. There is no CD workflow, no systemd
+unit, no provisioning or release script, no TLS story, and no runbook. `deploy_site()` emits an
+HTTP-only vhost and explicitly defers `nginx -s reload`, TLS, and remote copy as "operational"
+(`backend/app/modules/setup/site.py`). Every deploy is manual SSH, and nothing restarts the API
+after a reboot — which is the practical blocker between "CI is green" and "S6.4 (#34) can start".
 
-- the funnel dashboard's "impressions" is a publish counter, and
-- the zero-reach alert **cannot fire**: `published_in_window > 0` guarantees `reach >= 1` over the
-  same window, because publishing *is* what writes the reach row.
+## Survey of the target box (195.35.14.177, 2026-08-10)
 
-PRD §12 names cold-account shadowbanning as risk #1 and zero-reach alerting as the mitigation.
-DoD-2 requires "heartbeat confirming non-zero reach".
+The box is **shared with four unrelated projects**. This is the dominant constraint.
 
-## Architectural decision (Phase 4 — approved by maintainer)
+| Fact | Consequence |
+|---|---|
+| `:8010` → narrative-staging backend container; `:3010` → podcastfy `next-server` | **`PORTS.md` is stale.** Its "all three free" note is from 2026-06-09. |
+| `:8020`, `:3020`, `:5555` free | SME's new ports. |
+| nginx 1.24, 5 vhosts serving dev.autoauthor.app / dev.codeframe.sh / dev.briaanalytics.com / dev.podcaststudiohub.me | **Never edit an existing vhost. Never reload without `nginx -t` first** — a bad config takes down four other projects. |
+| certbot installed, `certbot.timer` active, 4 live certs | Renewal infrastructure already exists; we add a deploy hook, not a timer. |
+| ufw allows only 22/80/443 | Loopback binding + ufw *is* the NFR-1 private boundary. |
+| Postgres 16 + Redis on localhost; `uv` at /usr/local/bin; node 20 default but **24.13.0 under nvm** | Reuse per NFR-3. The dashboard build needs the nvm node 24 path, not the default. |
+| `/opt/auto-author` uses `releases/<ts>` + a `current` symlink | Mirror the box's existing release convention. |
 
-Platform counters are **cumulative gauges**; `metric_event` is **append-only**, summed over a
-window. Storing gauges directly would double-count and make the windowed sum meaningless.
+## Decisions taken (forced moves, not architectural forks)
 
-**Chosen: delta events.** Each poll inserts a REACH row carrying the increase since the previous
-poll. Preserves the append-only contract every other stage follows and keeps `_reach(since, now)`
-meaning literally "reach gained in this window" — which is exactly the question the shadowban alert
-asks. Rejected: cumulative upsert (mutates an append-only table; forces rewriting the alert to be
-item-scoped; loses history).
+1. **Ports → 8020 / 3020 / 5555.** 8010/3010 are occupied, NFR-3 forbids new infra, and evicting
+   other projects is not on the table. `check-ports.sh` defaults move too, or it aborts every
+   deploy forever on ports we deliberately abandoned.
+2. **Pull-based deploy script, no GitHub Actions CD.** The AC asks for an *idempotent deploy path*,
+   not a CD workflow. Auto-deploying on every merge to a box mid-way through an unattended ≥2-week
+   DoD run is a liability, and a push-based workflow needs a deploy-key secret we do not have.
+   `ssh staging /opt/sme/current/infra/deploy/deploy.sh` is the entry point.
+3. **TLS via a wildcard `include` that survives vhost regeneration.** `deploy_site` rewrites
+   `<domain>.conf` on every `setup_site` run, so anything certbot's `--nginx` plugin injected there
+   would be silently wiped on the next run. Instead the generated vhost carries
+   `include .../sme-tls/<domain>/*.conf;` — a *wildcard* include, which nginx tolerates when it
+   matches nothing — and `enable-tls.sh` writes the cert directives into that directory.
+4. **ACME challenge before the dotfile deny.** `location ^~ /.well-known/acme-challenge/` — a
+   prefix match outranks the `location ~ /\.` regex deny that #78 added, which would otherwise
+   silently fail every certificate issuance (the failure mode called out in the issue comment).
+5. **No separate Celery unit.** The AC says "(Phase B) the Celery worker", but there is no
+   VPS-side Celery worker to run: `task_routes` sends every `media.*` task to the `media` queue,
+   which the *ephemeral GPU pod* consumes, and `default` has no producers. The in-process worker,
+   scheduler, publish/crank/render ticks all live inside the API process (`app/scheduler.py`), so
+   `sme-api.service` restart-on-failure already covers "the worker". Shipping a unit for a process
+   with nothing to consume would be theatre. Documented in the runbook + PR rather than silently
+   skipped.
 
-## Steps (TDD — test first for each)
+## Steps
 
-1. **`MetricStage.REACH`** (`models/metric_event.py`) + note that `value` is a *delta* for this
-   stage, unlike the count/cents convention of the others.
-2. **Adapter seam** (`channels/base.py`): `fetch_reach(item, product, channel, creds) ->
-   int | None` on the protocol, returning the platform's **cumulative** count, **plus** a static
-   `has_platform_reach: bool`. Two mechanisms because there are two questions: the heartbeat needs
-   "can this channel type be shadowban-checked at all?" without holding an item or a credential
-   (that's the flag), while the poll needs "what is the number right now?" (that's the return, where
-   `None` = no number this tick — a deleted post or a drifted payload — distinct from a real zero).
-   Blog and podcast declare `has_platform_reach = False`.
-3. **Reddit** (`channels/reddit.py`): `submission.score` via PRAW; transient errors → skip, not
-   raise. **YouTube** (`channels/youtube.py`): `videos.list?part=statistics` → `viewCount`; reuse
-   the existing quota/`_raise_for_status` handling.
-4. **Poll pass** (`modules/metrics/reach.py`): `poll_reach(session, now, *, adapter_for=)`
-   — select `published` items on enabled/autonomous/non-failed channels published within the reach
-   window; per item compute `delta = max(0, cumulative - sum(prior REACH deltas))`; insert one row
-   with `source=f"reach:{item.id}:{now.isoformat()}"`. Bounded, per-item try/except, never raises
-   (mirrors `publish_scheduled`'s isolation). `max(0, …)` guards a counter reset/deletion.
-5. **Scheduler tick** (`scheduler.py`) + `reach_poll_interval_seconds` in config (bounded `ge=`).
-6. **Heartbeat** (`modules/heartbeat.py`): `_reach()` reads `MetricStage.REACH`; the zero-reach
-   evaluation **skips channels with no platform counter** so blog/podcast never false-alarm.
-7. **Funnel rollup** (`modules/metrics/funnel.py`): expose `reach` as its own stage alongside
-   `impressions`, so the dashboard stops presenting a publish count as reach.
-8. **Dashboard** (`lib/api.ts` + funnel component): surface `reach` distinctly from `impressions`.
+**A. Repo artifacts (no live-box changes — safe to land regardless)**
 
-## Acceptance criteria (from #79)
+1. `PORTS.md` — replace the stale conflict section with the 2026-08-10 survey; new port table.
+2. `check-ports.sh` — defaults `8020 3020 5555`.
+3. `sme.env.example` — deployment env template (absolute `SME_WORKSPACE_ROOT`, ports, CORS origin,
+   public API base URL, nginx roots, reload command, node bin).
+4. `systemd/sme-api.service`, `systemd/sme-dashboard.service` — loopback bind, `Restart=always`,
+   `EnvironmentFile`, non-root `User=sme`.
+5. `nginx/sme-acme.conf`, `nginx/sme-public-api.conf.template` — the ACME prefix location, and the
+   funnel/stripe proxy with `location /api/ { return 404; }` for everything else.
+6. `nginx-reload.sh` — `nginx -t && systemctl reload nginx`. The single sudoers-allowed command, so
+   the service user can reload nginx without broader root.
+7. `provision.sh` — one-time, idempotent host setup: user, dirs, ACME webroot, snippets, units,
+   sudoers (validated with `visudo -c`).
+8. `deploy.sh` — idempotent release: port check from env, fetch/checkout, `uv sync`, dashboard
+   build with the nvm node 24 path, restart units, guarded nginx reload, health check.
+9. `enable-tls.sh <domain>` — `certbot certonly --webroot`, write the per-domain TLS snippet,
+   guarded reload; idempotent (skips a live cert).
+10. `verify-deploy.sh` — asserts the private surface is loopback-only and CORS answers for the real
+    origin (AC 6 + 7 folded into one script rather than two).
+11. `RUNBOOK.md` — first deploy, redeploy, rollback, TLS, troubleshooting.
 
-- [x] Periodic poll fetches real engagement (Reddit `score`, YouTube `viewCount`)
-      — `test_reach_adapters.py`
-- [x] Real reach stored under a stage distinct from the publish counter — `MetricStage.REACH`
-- [x] `heartbeat._reach()` reads the real-reach stage; zero-reach can fire for a channel that
-      published but earned nothing
-- [x] **Test proving the alert fires** —
-      `test_reach_poll.py::test_zero_reach_alert_fires_for_a_published_post_nobody_saw`, which
-      drives `publish_scheduled` → `poll_reach` → `evaluate_alerts` rather than hand-building the
-      alert's input. The pre-existing `test_alert_zero_reach_when_published_but_no_impressions`
-      passed against the broken code precisely because it hand-built a state the publish pass
-      could never produce.
-- [x] Funnel rollup distinguishes published from reach — `stages.reach`, and the dashboard now
-      labels the publish counter "Published" instead of "Impressions"
-- [x] Poll is bounded, never raises, no-ops on an unconfigured/failed channel
-- [x] Owned channels explicitly excluded from zero-reach rather than silently passing
+**B. Backend changes (TDD — tests first)**
+
+12. `config.py` — `nginx_snippets_root`, `nginx_reload_command` (default `""` = disabled, so dev
+    and tests are unaffected).
+13. `site.py` `deploy_site` — emit the three `include` lines; run the reload command when
+    configured. Failure to reload must surface, not pass silently.
+14. Tests for the includes + the reload seam.
+
+**C. Live verification (mutating — confirm before starting)**
+
+15. `provision.sh` + `deploy.sh` against the real box, then `verify-deploy.sh`, the ACME-path
+    proof, and the restart-on-failure proof.
+
+16. `TECH_SPEC.md` §11 — bring into line with reality.
+
+## Acceptance criteria (from #80)
+
+- [ ] systemd units for the uvicorn API and the worker, with restart-on-failure
+- [ ] Idempotent deploy path; aborts non-zero if `check-ports.sh` fails
+- [ ] nginx base config committed: public vhost exposes **only** `/api/funnel/*` and
+      `/api/stripe/webhook`; everything else under `/api/` returns 404
+- [ ] TLS issuance + renewal for `marketing_domain` vhosts documented and automated
+- [ ] `nginx -s reload` wired to site deploy
+- [ ] Private surface (3020 / 8020 / 5555) verified firewalled/loopback-bound after deploy
+- [ ] CORS verified against the real origin before first remote deploy
+- [ ] Runbook covering first deploy, redeploy, and rollback
 
 ## Known limitations (for the PR)
 
-- Reddit `score` is net upvotes, not impressions — the closest cheap proxy PRAW exposes without
-  mod-only insights. Zero score on a published post is still the shadowban signal we want.
-- No backfill for items published before this lands; their first poll records the full cumulative
-  count as one delta. Harmless for the alert (it asks "was there any reach", not "how much"), but a
-  one-off spike in the funnel rollup the first time the poll runs.
-- Historic `IMPRESSION` rows are left untouched. They remain an honest publish count under a
-  misleading key name; renaming the wire field is a dashboard-contract change worth its own issue.
-- Reddit `score` can be negative on a heavily downvoted post; `max(0, …)` floors the delta, so a
-  post that gets downvoted after earning reach never subtracts from the window.
-- **The alert has no settling grace period.** `evaluate_alerts` fires when a channel published
-  anything in the window and earned zero reach across it — so a brand-new channel whose first post
-  is a few hours old can trip it before the post has had a fair chance. This is pre-existing
-  semantics that were simply unreachable before; making the alert fireable exposes it for the first
-  time. Bounded in practice (the digest is idempotent per UTC day, so at most one alert/day, and any
-  single unit of reach on any post in the window clears it). Worth a follow-up if it proves noisy:
-  either a minimum post age or requiring N consecutive zero-reach days.
+- **No real certificate can be issued yet.** TLS issuance needs a domain whose DNS points at the
+  box; no product has a `marketing_domain` configured. `enable-tls.sh` is therefore demonstrated up
+  to the challenge path (serving `/.well-known/acme-challenge/` through nginx past the dotfile
+  deny — the exact failure this issue's comment predicted), not through to a minted cert.
+- No GitHub Actions CD workflow — see decision 2.
+- Flower is not installed (`:5555` stays reserved). The S6.2 heartbeat digest is the operator's
+  queue-visibility surface; adding Flower would mean a new runtime dependency for a queue whose
+  only consumer is an ephemeral pod.

@@ -200,6 +200,17 @@ class Settings(BaseSettings):
     # are deployed (on the VPS this is nginx's web root; a vhost per marketing_domain is emitted).
     public_api_base_url: str = "http://localhost:8010"
     nginx_sites_root: str = "./deploy/sites"
+    # S0.5 (#80): where the shared nginx snippets live (`/etc/nginx/snippets` on the VPS). Each
+    # generated vhost `include`s the ACME challenge location, the public-API allowlist, and a
+    # per-domain TLS wildcard from here. Kept out of the generated file itself because
+    # `deploy_site` rewrites that file on every `setup_site` run — anything certbot's nginx plugin
+    # wrote there would be silently erased, leaving a valid certificate nobody serves.
+    nginx_snippets_root: str = "./deploy/snippets"
+    # Command run after a vhost is written, to make nginx re-read it. Empty (the default) means
+    # "don't" — dev and CI have no nginx, and shelling out there would just fail. Production sets
+    # `sudo /usr/local/sbin/sme-nginx-reload`, which tests the config before reloading so a bad
+    # generated vhost can't take down the other projects on the shared box.
+    nginx_reload_command: str = ""
 
     # S4.8.2 per-provider OAuth redirect flow. `oauth_redirect_base_url` is the *backend* origin the
     # provider redirects the operator's browser back to — the callback path is appended to build the
