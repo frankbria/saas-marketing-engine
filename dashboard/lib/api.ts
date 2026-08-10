@@ -72,7 +72,9 @@ export interface StrategyBrief {
 }
 
 // S2.6: channels + human setup checklist.
-export type ChannelType = "blog" | "reddit" | "x" | "instagram" | "youtube"
+// Mirrors app/models/channel.py::ChannelType — kept in step by test_dashboard_types.py.
+export type ChannelType =
+  "blog" | "reddit" | "x" | "instagram" | "youtube" | "podcast"
 export type ConnectState = "pending" | "connected" | "failed"
 export type SetupItemStatus = "pending" | "done"
 
@@ -119,13 +121,17 @@ export interface QaChecklistItem {
   updated_at: string
 }
 
-// S4.2/S4.7: a generated piece of content. The dashboard only surfaces published/retracted ones
-// (for the retract action); the full pipeline status set lives on the backend enum.
+// S4.2/S4.7: a generated piece of content. The published-content view surfaces only
+// published/retracted (for the retract action), but the calendar (S6.3) shows every status, so
+// this union must be the *whole* backend set.
+// Mirrors app/models/content_item.py::ContentItemStatus — kept in step by test_dashboard_types.py.
 export type ContentItemStatus =
   | "generated"
   | "critic_passed"
   | "critic_failed"
   | "guard_failed"
+  | "rendering"
+  | "render_failed"
   | "scheduled"
   | "published"
   | "publish_failed"
