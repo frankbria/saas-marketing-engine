@@ -11,18 +11,11 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { formatReach } from "@/lib/utils"
-import { type CalendarItem, type ContentItemStatus } from "@/lib/api"
+import { type CalendarItem } from "@/lib/api"
 import { monthGrid } from "@/lib/calendar"
+import { statusBadgeClass, statusLabel } from "@/lib/content-status"
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-// First-class statuses get their own hue; everything in-between stays muted.
-const STATUS_BADGE: Partial<Record<ContentItemStatus, string>> = {
-  generated: "bg-sky-100 text-sky-800",
-  critic_passed: "bg-teal-100 text-teal-800",
-  published: "bg-green-100 text-green-800",
-  retracted: "bg-amber-100 text-amber-800",
-}
 
 interface CalendarMonth {
   year: number
@@ -147,9 +140,9 @@ function ItemChip({ item }: { item: CalendarItem }) {
         </span>
       </span>
       <span
-        className={`self-start truncate rounded px-2 py-0.5 text-xs ${STATUS_BADGE[item.status] ?? "bg-muted text-muted-foreground"}`}
+        className={`self-start truncate rounded px-2 py-0.5 text-xs ${statusBadgeClass(item.status)}`}
       >
-        {item.status.replace(/_/g, " ")}
+        {statusLabel(item.status)}
       </span>
       {hasPerformance && (
         // "reach", not "impr": `impressions` is the publish counter (always 1 for a published
