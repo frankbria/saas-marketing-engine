@@ -23,6 +23,7 @@ from app.scheduler import (
     _media_provisioner_tick,
     _podcast_render_tick,
     _publish_tick,
+    _reach_poll_tick,
     _video_render_tick,
     _worker_tick,
     create_scheduler,
@@ -187,6 +188,7 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
         "media_provisioner",
         "video_render",
         "podcast_render",
+        "reach_poll",
     }
 
     # Pin each job's callable + interval, so a mis-wiring (wrong func/interval) fails the test.
@@ -216,6 +218,11 @@ def test_scheduler_builds_worker_heartbeat_and_crank_jobs():
         "podcast_render": (
             _podcast_render_tick,
             settings.podcast_render_tick_seconds,
+        ),
+        # S6.2.1 (#79): poll real platform reach so the zero-reach shadowban alert has data.
+        "reach_poll": (
+            _reach_poll_tick,
+            settings.reach_poll_interval_seconds,
         ),
     }
     for job_id, (func, interval) in expected.items():

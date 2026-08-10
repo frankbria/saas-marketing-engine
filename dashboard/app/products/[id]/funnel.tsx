@@ -1,4 +1,5 @@
 import { getFunnel, type Funnel } from "@/lib/api"
+import { formatReach } from "@/lib/utils"
 
 // S6.1: attributed funnel + revenue. Fetches its own data (unlike sibling sections, which receive
 // already-fetched props) since it 404s independently of the rest of the page until the S6.1
@@ -13,6 +14,7 @@ export async function Funnel({ productId }: { productId: number }) {
 
   const stages = funnel?.stages ?? {
     impressions: 0,
+    reach: 0,
     visits: 0,
     signups: 0,
     paid: 0,
@@ -22,6 +24,7 @@ export async function Funnel({ productId }: { productId: number }) {
 
   const isEmpty =
     stages.impressions === 0 &&
+    stages.reach === 0 &&
     stages.visits === 0 &&
     stages.signups === 0 &&
     stages.paid === 0 &&
@@ -29,6 +32,7 @@ export async function Funnel({ productId }: { productId: number }) {
 
   const maxStageCount = Math.max(
     stages.impressions,
+    stages.reach,
     stages.visits,
     stages.signups,
     stages.paid,
@@ -43,11 +47,19 @@ export async function Funnel({ productId }: { productId: number }) {
         <p className="text-sm text-muted-foreground">No funnel activity yet</p>
       ) : (
         <>
-          <div className="grid grid-cols-5 gap-2">
+          <div className="grid grid-cols-6 gap-2">
+            {/* Labelled "Published", not "Impressions": the backend key is `impressions` for wire
+                compatibility, but the number is one row per published item. Calling it impressions
+                is what let a publish count pass as audience for six stories (S6.2.1/#79). */}
             <StageTile
-              label="Impressions"
+              label="Published"
               value={stages.impressions.toLocaleString()}
               barPct={(stages.impressions / maxStageCount) * 100}
+            />
+            <StageTile
+              label="Reach"
+              value={stages.reach.toLocaleString()}
+              barPct={(stages.reach / maxStageCount) * 100}
             />
             <StageTile
               label="Visits"
@@ -72,7 +84,8 @@ export async function Funnel({ productId }: { productId: number }) {
               <tr className="border-b text-left text-xs text-muted-foreground">
                 <th className="py-1 pr-2 font-medium">Channel</th>
                 <th className="py-1 pr-2 font-medium">Content</th>
-                <th className="py-1 pr-2 font-medium">Impressions</th>
+                <th className="py-1 pr-2 font-medium">Published</th>
+                <th className="py-1 pr-2 font-medium">Reach</th>
                 <th className="py-1 pr-2 font-medium">Visits</th>
                 <th className="py-1 pr-2 font-medium">Signups</th>
                 <th className="py-1 pr-2 font-medium">Paid</th>
@@ -94,6 +107,7 @@ export async function Funnel({ productId }: { productId: number }) {
                   <td className="py-2 pr-2">
                     {row.impressions.toLocaleString()}
                   </td>
+                  <td className="py-2 pr-2">{formatReach(row.reach)}</td>
                   <td className="py-2 pr-2">{row.visits.toLocaleString()}</td>
                   <td className="py-2 pr-2">{row.signups.toLocaleString()}</td>
                   <td className="py-2 pr-2">{row.paid.toLocaleString()}</td>

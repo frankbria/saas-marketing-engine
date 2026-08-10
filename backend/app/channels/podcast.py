@@ -68,6 +68,14 @@ def _atomic_write_text(path: Path, text: str) -> None:
 class PodcastAdapter:
     type = ChannelType.PODCAST
     credential_key = None  # owned RSS feed: no external credential
+    # Owned RSS on the product's own site — same reasoning as the blog: no third-party counter, no
+    # shadowban surface. Download counts would come from the served-root access log, not an API.
+    has_platform_reach = False
+
+    def fetch_reach(
+        self, item: ContentItem, product: Product, channel: Channel, creds: str | None
+    ) -> int | None:
+        return None
 
     def publish(
         self, item: ContentItem, product: Product, channel: Channel, creds: str | None

@@ -48,6 +48,15 @@ def _external_url(product: Product, post_slug: str) -> str:
 class BlogAdapter:
     type = ChannelType.BLOG
     credential_key = None  # owned site: no external credential
+    # Owned infra has no platform counter to poll and cannot be shadowbanned — nobody else decides
+    # whether these pages are shown. Excluded from the zero-reach alert by this flag (S6.2.1);
+    # measuring owned traffic is an nginx-log/analytics problem, deliberately out of scope.
+    has_platform_reach = False
+
+    def fetch_reach(
+        self, item: ContentItem, product: Product, channel: Channel, creds: str | None
+    ) -> int | None:
+        return None
 
     def publish(
         self, item: ContentItem, product: Product, channel: Channel, creds: str | None

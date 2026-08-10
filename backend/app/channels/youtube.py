@@ -174,6 +174,48 @@ def _resumable_upload(client: httpx.Client, media_path: Path, title: str, descri
 class YouTubeAdapter:
     type = ChannelType.YOUTUBE
     credential_key = "youtube_oauth"
+    has_platform_reach = True
+
+    def fetch_reach(
+        self, item: ContentItem, product: Product, channel: Channel, creds: str | None
+    ) -> int | None:
+        """Cumulative `viewCount` for one published video (`videos.list?part=statistics`).
+
+        A real impression count, unlike Reddit's score proxy. Costs 1 quota unit per call, so the
+        poll's per-item bound (only items published inside the reach window) is what keeps the
+        daily 10k budget intact rather than any throttling here.
+        """
+        video_id = _video_id_from_url(item.external_url) if item.external_url else None
+        if not video_id:
+            return None  # never published, or a URL we cannot parse — nothing to poll
+        try:
+            with _build_youtube(creds) as client:
+                resp = client.get(_VIDEOS_URL, params={"part": "statistics", "id": video_id})
+                if resp.status_code == 404:
+                    return None  # video gone (deleted/retracted) — no counter, and never again
+                _raise_for_status(resp, "statistics")
+                payload = resp.json()
+        except httpx.TransportError as exc:
+            raise Retryable(f"youtube statistics fetch failed: {exc}") from exc
+        except ValueError:
+            # A 200 whose body is not JSON (a proxy/captive-portal HTML page is the usual culprit).
+            # "No number" — letting the decode error escape would log a traceback per item, per
+            # tick, for a condition that is neither a bug nor a platform verdict on our reach.
+            return None
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        if not items:
+            # A 200 with an empty `items` is how the Data API reports an id it will not serve
+            # (deleted, or made private after upload) — not an error, just no number.
+            return None
+        views = (items[0].get("statistics") or {}).get("viewCount")
+        if views is None:
+            return None
+        try:
+            return int(views)
+        except (TypeError, ValueError):
+            # viewCount is a *string* in the API's JSON; a non-numeric one means the response shape
+            # drifted. Skip the item rather than crash the whole poll on one bad payload.
+            return None
 
     def publish(
         self, item: ContentItem, product: Product, channel: Channel, creds: str | None

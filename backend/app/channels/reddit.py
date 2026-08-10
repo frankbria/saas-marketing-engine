@@ -119,9 +119,49 @@ def _is_transient(exc: Exception) -> bool:
     return False
 
 
+def _is_gone(exc: Exception) -> bool:
+    """A submission that no longer exists (deleted by the author, removed by a mod, 404). There is
+    no counter to read and there never will be again, so the poll drops the item rather than
+    raising the same permanent error on every tick forever."""
+    try:
+        from prawcore.exceptions import NotFound
+    except ImportError:  # praw not installed in this env — no classification available
+        return False
+    return isinstance(exc, NotFound)
+
+
 class RedditAdapter:
     type = ChannelType.REDDIT
     credential_key = "reddit_oauth"
+    has_platform_reach = True
+
+    def fetch_reach(
+        self, item: ContentItem, product: Product, channel: Channel, creds: str | None
+    ) -> int | None:
+        """Cumulative engagement for one published submission: its `score` (net upvotes).
+
+        Score is a proxy, not impressions — PRAW exposes no impression count for a non-mod account
+        (`view_count` is populated only for subreddits the authenticated user moderates, and is
+        None otherwise). It is still the right shadowban signal: a post nobody can see earns no
+        votes, so a *zero* score on a published post is exactly the condition the alert asks about.
+        The absolute number is soft; the zero is the load-bearing part.
+        """
+        if not item.external_url:
+            return None  # never published, or published without a recorded URL — nothing to poll
+        parsed = _parse_creds(creds)
+        try:
+            score = _build_reddit(parsed).submission(url=item.external_url).score
+        except Exception as exc:
+            # Same classification the publish path uses, so one dead token / rate-limit story
+            # covers both. The caller decides what to do; the poll never lets it escape.
+            if _is_gone(exc):
+                return None
+            if _is_transient(exc):
+                raise Retryable(f"reddit score fetch failed: {exc}") from exc
+            if _is_auth_failure(exc):
+                raise AuthFailure(f"reddit auth failed: {exc}") from exc
+            raise
+        return int(score) if score is not None else None
 
     def publish(
         self, item: ContentItem, product: Product, channel: Channel, creds: str | None

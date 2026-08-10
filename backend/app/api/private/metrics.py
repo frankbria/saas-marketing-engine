@@ -1,9 +1,13 @@
 """Metrics API (private dashboard, story S6.1 — attributed funnel + revenue).
 
 Surfaces the per-product funnel rollup (stage totals + per-channel/content-item attribution rows)
-so the operator can see impressions → visits → signups → paid → revenue, joinable back to the
-channel/content item that drove each conversion. Per-product only; portfolio roll-up is deferred
-until there's more than one product (TECH_SPEC §14).
+so the operator can see published → reach → visits → signups → paid → revenue, joinable back to
+the channel/content item that drove each conversion. `impressions` (the wire name) counts items
+published; `reach` is the engagement polled back from the platforms (S6.2.1) — they are separate
+stages precisely because reporting the first as the second hid whether anyone saw the posts; a row
+whose channel has no platform counter reports `reach: null` (unmeasured), never 0.
+
+Per-product only; portfolio roll-up is deferred until there's more than one product (§14).
 """
 
 import json
