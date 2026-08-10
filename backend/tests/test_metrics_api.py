@@ -67,7 +67,7 @@ def test_funnel_empty_product_returns_zeros(ctx):
 
     assert resp.status_code == 200
     assert resp.json() == {
-        "stages": {"impressions": 0, "reach": 0, "visits": 0, "signups": 0, "paid": 0},
+        "stages": {"published": 0, "reach": 0, "visits": 0, "signups": 0, "paid": 0},
         "revenue_cents": 0,
         "rows": [],
     }
@@ -104,14 +104,14 @@ def _seed_scenario(engine, pid: int) -> dict:
         s.refresh(item1)
         s.refresh(item2)
 
-        # impressions: 3 on item1/channel_a, 1 on item2/channel_b
+        # published: 3 on item1/channel_a, 1 on item2/channel_b
         for _ in range(3):
             s.add(
                 MetricEvent(
                     product_id=pid,
                     channel_id=channel_a.id,
                     content_item_id=item1.id,
-                    stage=MetricStage.IMPRESSION,
+                    stage=MetricStage.PUBLISHED,
                     value=1,
                 )
             )
@@ -120,7 +120,7 @@ def _seed_scenario(engine, pid: int) -> dict:
                 product_id=pid,
                 channel_id=channel_b.id,
                 content_item_id=item2.id,
-                stage=MetricStage.IMPRESSION,
+                stage=MetricStage.PUBLISHED,
                 value=1,
             )
         )
@@ -185,7 +185,7 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert resp.status_code == 200
     body = resp.json()
 
-    assert body["stages"] == {"impressions": 4, "reach": 0, "visits": 4, "signups": 1, "paid": 2}
+    assert body["stages"] == {"published": 4, "reach": 0, "visits": 4, "signups": 1, "paid": 2}
     assert body["revenue_cents"] == 6000
 
     rows = body["rows"]
@@ -197,7 +197,7 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert row_item1["content_item_id"] == ids["item1"]
     assert row_item1["title"] == "Item One"
     assert row_item1["external_url"] == "https://acme.example/item1"
-    assert row_item1["impressions"] == 3
+    assert row_item1["published"] == 3
     # reddit has a platform counter, so an integer (0 = polled and genuinely unseen)
     assert row_item1["reach"] == 0
     assert row_item1["visits"] == 2
@@ -211,7 +211,7 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert row_item2["content_item_id"] == ids["item2"]
     assert row_item2["title"] == "Item Two"
     assert row_item2["external_url"] is None
-    assert row_item2["impressions"] == 1
+    assert row_item2["published"] == 1
     # blog is owned — no platform counter, so reach is null (unmeasured), never 0 (unseen)
     assert row_item2["reach"] is None
     assert row_item2["visits"] == 0
@@ -226,7 +226,7 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert row_channel_only["title"] is None
     assert row_channel_only["external_url"] is None
     assert row_channel_only["visits"] == 1
-    assert row_channel_only["impressions"] == 0
+    assert row_channel_only["published"] == 0
     assert row_channel_only["reach"] is None
 
     # unattributed row always last
@@ -272,7 +272,7 @@ def test_funnel_never_hydrates_other_products_metadata(ctx):
                 product_id=pid,
                 channel_id=other_channel.id,
                 content_item_id=other_item.id,
-                stage=MetricStage.IMPRESSION,
+                stage=MetricStage.PUBLISHED,
                 value=1,
             )
         )
@@ -282,7 +282,39 @@ def test_funnel_never_hydrates_other_products_metadata(ctx):
 
     assert len(body["rows"]) == 1
     row = body["rows"][0]
-    assert row["impressions"] == 1
+    assert row["published"] == 1
     assert row["channel_type"] is None
     assert row["title"] is None
     assert row["external_url"] is None
+
+
+def test_metric_stage_published_keeps_its_legacy_value():
+    """S6.1.1 (#88): the member is `PUBLISHED`, the stored string is still `"impression"`.
+
+    That split is deliberate. v1 has no Alembic — `app/db.py` can add a column but cannot rewrite
+    values — so changing the stored string needs
+    `UPDATE metric_event SET stage='published' WHERE stage='impression'` run by hand against every
+    deployed database. Miss one and historical rows stop matching the filter: the funnel silently
+    under-reports instead of failing, which is strictly worse than a stale string in storage.
+
+    If you are here because this test failed, you renamed the value. Write the migration first.
+    """
+    assert MetricStage.PUBLISHED.value == "impression"
+
+
+def test_no_response_field_is_called_impressions(ctx):
+    """The rename is the point: a publish count under an audience name is what hid the S6.1 bug.
+
+    Asserting on the *absence* of the old key stops it drifting back in alongside the new one.
+    """
+    client, engine = ctx
+    product_id = _make_product(engine)
+    with Session(engine) as s:
+        s.add(MetricEvent(product_id=product_id, stage=MetricStage.PUBLISHED, value=1))
+        s.commit()
+
+    body = client.get(f"/api/private/metrics/{product_id}/funnel").json()
+
+    assert "published" in body["stages"]
+    assert "impressions" not in body["stages"]
+    assert all("impressions" not in row for row in body["rows"])

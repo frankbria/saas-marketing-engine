@@ -40,7 +40,7 @@ ITEM_FIELDS = {
 }
 
 ZERO_METRICS = {
-    "impressions": 0,
+    "published": 0,
     "reach": 0,
     "visits": 0,
     "signups": 0,
@@ -176,7 +176,7 @@ def test_calendar_metrics_join_and_zero_default(ctx):
                     product_id=pid,
                     channel_id=cid,
                     content_item_id=item1,
-                    stage=MetricStage.IMPRESSION,
+                    stage=MetricStage.PUBLISHED,
                     value=1,
                 )
             )
@@ -206,7 +206,7 @@ def test_calendar_metrics_join_and_zero_default(ctx):
 
     by_id = {i["id"]: i for i in body}
     assert by_id[item1]["metrics"] == {
-        "impressions": 3,
+        "published": 3,
         "reach": 0,
         "visits": 2,
         "signups": 1,

@@ -13,7 +13,7 @@ export async function Funnel({ productId }: { productId: number }) {
   }
 
   const stages = funnel?.stages ?? {
-    impressions: 0,
+    published: 0,
     reach: 0,
     visits: 0,
     signups: 0,
@@ -23,7 +23,7 @@ export async function Funnel({ productId }: { productId: number }) {
   const rows = funnel?.rows ?? []
 
   const isEmpty =
-    stages.impressions === 0 &&
+    stages.published === 0 &&
     stages.reach === 0 &&
     stages.visits === 0 &&
     stages.signups === 0 &&
@@ -31,7 +31,7 @@ export async function Funnel({ productId }: { productId: number }) {
     revenueCents === 0
 
   const maxStageCount = Math.max(
-    stages.impressions,
+    stages.published,
     stages.reach,
     stages.visits,
     stages.signups,
@@ -48,13 +48,13 @@ export async function Funnel({ productId }: { productId: number }) {
       ) : (
         <>
           <div className="grid grid-cols-6 gap-2">
-            {/* Labelled "Published", not "Impressions": the backend key is `impressions` for wire
-                compatibility, but the number is one row per published item. Calling it impressions
-                is what let a publish count pass as audience for six stories (S6.2.1/#79). */}
+            {/* Key and label finally agree: `published` is one row per published item. It was
+                `impressions` until S6.1.1 (#88), and that name is what let a publish count pass
+                as audience for six stories (S6.2.1/#79). */}
             <StageTile
               label="Published"
-              value={stages.impressions.toLocaleString()}
-              barPct={(stages.impressions / maxStageCount) * 100}
+              value={stages.published.toLocaleString()}
+              barPct={(stages.published / maxStageCount) * 100}
             />
             <StageTile
               label="Reach"
@@ -105,7 +105,7 @@ export async function Funnel({ productId }: { productId: number }) {
                     {row.title ?? row.external_url ?? "—"}
                   </td>
                   <td className="py-2 pr-2">
-                    {row.impressions.toLocaleString()}
+                    {row.published.toLocaleString()}
                   </td>
                   <td className="py-2 pr-2">{formatReach(row.reach)}</td>
                   <td className="py-2 pr-2">{row.visits.toLocaleString()}</td>

@@ -2,10 +2,13 @@
 
 Surfaces the per-product funnel rollup (stage totals + per-channel/content-item attribution rows)
 so the operator can see published → reach → visits → signups → paid → revenue, joinable back to
-the channel/content item that drove each conversion. `impressions` (the wire name) counts items
-published; `reach` is the engagement polled back from the platforms (S6.2.1) — they are separate
-stages precisely because reporting the first as the second hid whether anyone saw the posts; a row
-whose channel has no platform counter reports `reach: null` (unmeasured), never 0.
+the channel/content item that drove each conversion. `published` counts items posted; `reach` is
+the engagement polled back from the platforms (S6.2.1) — they are separate stages precisely
+because reporting the first as the second hid whether anyone saw the posts; a row whose channel
+has no platform counter reports `reach: null` (unmeasured), never 0.
+
+The `published` key was called `impressions` until S6.1.1 (#88). The stored `metric_event.stage`
+value is still the legacy `"impression"` — see `MetricStage.PUBLISHED` for why.
 
 Per-product only; portfolio roll-up is deferred until there's more than one product (§14).
 """

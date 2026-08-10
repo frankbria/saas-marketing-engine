@@ -252,7 +252,7 @@ describe("content calendar (S6.3)", () => {
         created_at: "2026-06-30T12:00:00Z",
         external_url: "https://reddit.com/r/x/3",
         metrics: {
-          impressions: 10,
+          published: 10,
           reach: 25,
           visits: 4,
           signups: 1,
@@ -273,7 +273,7 @@ describe("content calendar (S6.3)", () => {
 describe("attributed funnel (S6.1)", () => {
   it("getFunnel GETs the funnel endpoint and returns the parsed body", async () => {
     const body = {
-      stages: { impressions: 10, reach: 250, visits: 5, signups: 2, paid: 1 },
+      stages: { published: 10, reach: 250, visits: 5, signups: 2, paid: 1 },
       revenue_cents: 999,
       rows: [
         {
@@ -282,7 +282,7 @@ describe("attributed funnel (S6.1)", () => {
           content_item_id: 7,
           title: "Post title",
           external_url: "https://reddit.com/r/x/1",
-          impressions: 10,
+          published: 10,
           reach: 250,
           visits: 5,
           signups: 2,

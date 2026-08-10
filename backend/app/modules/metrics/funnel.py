@@ -1,6 +1,6 @@
 """Per-product attributed funnel rollup (TECH_SPEC §6.6/§8, story S6.1).
 
-Stage totals come straight off the two funnel tables — impressions/paid from `metric_event`
+Stage totals come straight off the two funnel tables — published/reach/paid from `metric_event`
 (written at publish time and by the Stripe webhook join), visits/signups from `funnel_event` (the
 only table carrying UTM). Attribution rows group by `(channel_id, content_item_id)`: metric_event
 rows already carry those columns; funnel_event rows resolve them via `resolve_attribution`, the
@@ -27,26 +27,27 @@ def zero_metrics() -> dict[str, int]:
     `reach` starts at 0 but may end up `None` on a row whose channel has no platform counter
     (see `funnel_rollup`): unmeasured, not zero.
     """
-    return {"impressions": 0, "reach": 0, "visits": 0, "signups": 0, "paid": 0, "revenue_cents": 0}
+    return {"published": 0, "reach": 0, "visits": 0, "signups": 0, "paid": 0, "revenue_cents": 0}
 
 
 def funnel_rollup(session: Session, product: Product) -> dict:
     """Stage totals + per-channel/content-item attribution rows for one product."""
     row_values: dict[_Key, dict[str, int]] = {}
-    # `impressions` is how many items we published; `reach` is how many people the platforms say
-    # saw them (S6.2.1/#79). They were the same number until real polling landed, which is exactly
-    # why they are now reported side by side — a dashboard showing one publish count labelled
-    # "impressions" told the operator nothing about whether anyone was reached.
-    stages = {"impressions": 0, "reach": 0, "visits": 0, "signups": 0, "paid": 0}
+    # `published` is how many items we posted; `reach` is how many people the platforms say saw
+    # them (S6.2.1/#79). They were the same number until real polling landed, which is exactly why
+    # they are now reported side by side. The key was called `impressions` until S6.1.1 (#88) — a
+    # publish count under that name told the operator nothing about whether anyone was reached,
+    # and reading like an audience metric is what kept the original defect invisible.
+    stages = {"published": 0, "reach": 0, "visits": 0, "signups": 0, "paid": 0}
     revenue_cents = 0
 
     metrics = session.exec(select(MetricEvent).where(MetricEvent.product_id == product.id)).all()
     for metric in metrics:
         key = (metric.channel_id, metric.content_item_id)
         values = row_values.setdefault(key, zero_metrics())
-        if metric.stage == MetricStage.IMPRESSION:
-            stages["impressions"] += metric.value
-            values["impressions"] += metric.value
+        if metric.stage == MetricStage.PUBLISHED:
+            stages["published"] += metric.value
+            values["published"] += metric.value
         elif metric.stage == MetricStage.REACH:
             # Deltas, so summing them is the all-time reach for this attribution key.
             stages["reach"] += metric.value
@@ -104,7 +105,7 @@ def funnel_rollup(session: Session, product: Product) -> dict:
         else:
             attributed_rows.append(row)
 
-    attributed_rows.sort(key=lambda r: (-r["revenue_cents"], -r["impressions"]))
+    attributed_rows.sort(key=lambda r: (-r["revenue_cents"], -r["published"]))
     if unattributed_row is not None:
         attributed_rows.append(unattributed_row)
 
