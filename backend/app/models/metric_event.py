@@ -15,6 +15,10 @@ from sqlmodel import Field, SQLModel
 
 class MetricStage(StrEnum):
     IMPRESSION = "impression"
+    # S6.2.1: real platform engagement polled back from Reddit/YouTube, kept strictly apart from
+    # IMPRESSION (which is a publish counter — one row per published item). Conflating them is what
+    # made the zero-reach shadowban alert unfireable: publishing wrote the very rows the alert read.
+    REACH = "reach"
     VISIT = "visit"
     SIGNUP = "signup"
     PAID = "paid"
@@ -35,7 +39,11 @@ class MetricEvent(SQLModel, table=True):
     content_item_id: int | None = Field(default=None, index=True)
 
     stage: MetricStage = Field(index=True)
-    value: int = 0  # cents for `paid`; a count for the other stages
+    # cents for `paid`; a count for the other stages. For `reach` it is a **delta** — the increase
+    # in the platform's cumulative counter since the previous poll — because this table is
+    # append-only and every reader sums it over a window. Storing the gauge itself would
+    # double-count on every poll and make `sum(value) over a window` meaningless.
+    value: int = 0
     occurred_at: datetime = Field(default_factory=_utcnow)
 
     # Provenance + idempotency key, e.g. "stripe:cs_test_123" (Stripe redelivers webhook events).

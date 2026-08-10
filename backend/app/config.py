@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     # impressions over it. Only channels that actually published can trip it — a quiet channel is
     # not a shadowban signal.
     heartbeat_zero_reach_window_days: int = Field(default=7, ge=1)
+    # S6.2.1 reach poll (#79): how often published items are re-polled for their platform counter.
+    # The poll *window* is deliberately not its own setting — it reuses
+    # `heartbeat_zero_reach_window_days` so the pass can never fill a narrower window than the
+    # alert reads. ge=300: each tick costs one API call per in-window item, and sub-5-minute
+    # polling would burn YouTube quota for counters that move far slower than that.
+    reach_poll_interval_seconds: int = Field(default=3600, ge=300)
     # Operator address for alert + digest emails. Unset ⇒ delivery stays log-only (raise_alert's
     # v1 behavior); requires smtp_host too, same degrade-gracefully contract as the welcome email.
     alert_email_to: str | None = None

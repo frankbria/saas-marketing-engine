@@ -10,6 +10,7 @@ import {
 } from "@hugeicons/core-free-icons"
 
 import { Button } from "@/components/ui/button"
+import { formatReach } from "@/lib/utils"
 import { type CalendarItem, type ContentItemStatus } from "@/lib/api"
 import { monthGrid } from "@/lib/calendar"
 
@@ -151,8 +152,11 @@ function ItemChip({ item }: { item: CalendarItem }) {
         {item.status.replace(/_/g, " ")}
       </span>
       {hasPerformance && (
+        // "reach", not "impr": `impressions` is the publish counter (always 1 for a published
+        // item), so labelling it "impr" read as audience when it never was (S6.2.1/#79). A null
+        // reach (owned channel, no platform counter) renders "— reach": unmeasured, not unseen.
         <span className="truncate text-muted-foreground">
-          {item.metrics.impressions.toLocaleString()} impr ·{" "}
+          {formatReach(item.metrics.reach)} reach ·{" "}
           {formatCents(item.metrics.revenue_cents)}
         </span>
       )}

@@ -88,14 +88,21 @@ def _add_item(engine, product_id: int, channel_id: int, *, status, published_at=
         return item
 
 
-def _add_impressions(engine, product_id: int, channel_id: int, count: int, occurred_at: datetime):
+def _add_reach(engine, product_id: int, channel_id: int, count: int, occurred_at: datetime):
+    """Record `count` units of real platform reach.
+
+    Writes `REACH`, not `IMPRESSION` (S6.2.1/#79): the digest's `reach` field and the zero-reach
+    alert both read the polled-engagement stage now. `IMPRESSION` is the publish counter, and while
+    the two shared a stage the alert below could never fire — anything published had already
+    written its own non-zero "reach".
+    """
     with Session(engine) as s:
         for _ in range(count):
             s.add(
                 MetricEvent(
                     product_id=product_id,
                     channel_id=channel_id,
-                    stage=MetricStage.IMPRESSION,
+                    stage=MetricStage.REACH,
                     value=1,
                     occurred_at=occurred_at,
                 )
@@ -111,7 +118,7 @@ def test_digest_counts_published_failed_reach_per_channel(engine):
     blog = _make_channel(engine, p.id, ChannelType.BLOG)
     reddit = _make_channel(engine, p.id, ChannelType.REDDIT)
 
-    # blog: 2 published in window, 1 published outside window, 3 impressions in window
+    # blog: 2 published in window, 1 published outside window
     _add_item(
         engine,
         p.id,
@@ -133,11 +140,12 @@ def test_digest_counts_published_failed_reach_per_channel(engine):
         status=ContentItemStatus.PUBLISHED,
         published_at=NOW - timedelta(days=2),
     )
-    _add_impressions(engine, p.id, blog.id, 3, NOW - timedelta(hours=1))
-    _add_impressions(engine, p.id, blog.id, 5, NOW - timedelta(days=3))  # outside window
-
-    # reddit: 1 stuck publish_failed (stock, not flow)
+    # reddit: 1 stuck publish_failed (stock, not flow) + 3 reach in window, 5 outside it.
+    # Reach lives on reddit, not blog: only a channel with a platform counter can accrue REACH
+    # rows, so putting them on the owned blog would pin a state production cannot produce.
     _add_item(engine, p.id, reddit.id, status=ContentItemStatus.PUBLISH_FAILED, error="boom")
+    _add_reach(engine, p.id, reddit.id, 3, NOW - timedelta(hours=1))
+    _add_reach(engine, p.id, reddit.id, 5, NOW - timedelta(days=3))  # outside window
 
     with Session(engine) as s:
         digest = build_digest(s, p, NOW)
@@ -145,10 +153,10 @@ def test_digest_counts_published_failed_reach_per_channel(engine):
     rows = {r["channel_type"]: r for r in digest["channels"]}
     assert rows["blog"]["published"] == 2
     assert rows["blog"]["failed"] == 0
-    assert rows["blog"]["reach"] == 3
+    assert rows["blog"]["reach"] == 0
     assert rows["reddit"]["published"] == 0
     assert rows["reddit"]["failed"] == 1
-    assert rows["reddit"]["reach"] == 0
+    assert rows["reddit"]["reach"] == 3
 
 
 def test_digest_ignores_other_products(engine):
@@ -210,10 +218,10 @@ def test_alert_dead_oauth_token(engine):
     assert [a["kind"] for a in alerts] == ["oauth_token_dead"]
 
 
-def test_alert_zero_reach_when_published_but_no_impressions(engine):
+def test_alert_zero_reach_when_published_but_no_reach(engine):
     p = _make_product(engine)
-    ch = _make_channel(engine, p.id, ChannelType.BLOG)
-    # published 3 days ago, inside the 7-day zero-reach window; zero impressions ever
+    ch = _make_channel(engine, p.id, ChannelType.REDDIT)
+    # published 3 days ago, inside the 7-day zero-reach window; zero polled reach ever
     _add_item(
         engine,
         p.id,
@@ -231,7 +239,7 @@ def test_alert_zero_reach_when_published_but_no_impressions(engine):
 
 def test_no_zero_reach_alert_when_channel_has_reach(engine):
     p = _make_product(engine)
-    ch = _make_channel(engine, p.id, ChannelType.BLOG)
+    ch = _make_channel(engine, p.id, ChannelType.REDDIT)
     _add_item(
         engine,
         p.id,
@@ -239,7 +247,7 @@ def test_no_zero_reach_alert_when_channel_has_reach(engine):
         status=ContentItemStatus.PUBLISHED,
         published_at=NOW - timedelta(days=3),
     )
-    _add_impressions(engine, p.id, ch.id, 1, NOW - timedelta(days=1))
+    _add_reach(engine, p.id, ch.id, 1, NOW - timedelta(days=1))
 
     with Session(engine) as s:
         digest = build_digest(s, p, NOW)
@@ -251,7 +259,32 @@ def test_no_zero_reach_alert_when_channel_has_reach(engine):
 def test_no_zero_reach_alert_when_nothing_published(engine):
     """A quiet channel (nothing published in the window) is not a shadowban signal."""
     p = _make_product(engine)
-    _make_channel(engine, p.id, ChannelType.BLOG)
+    _make_channel(engine, p.id, ChannelType.REDDIT)
+
+    with Session(engine) as s:
+        digest = build_digest(s, p, NOW)
+        alerts = evaluate_alerts(s, p, digest, NOW)
+
+    assert [a["kind"] for a in alerts] == []
+
+
+@pytest.mark.parametrize("owned", [ChannelType.BLOG, ChannelType.PODCAST])
+def test_no_zero_reach_alert_for_owned_channels(engine, owned):
+    """Owned infra is excluded deliberately, not by accident (issue #79, last criterion).
+
+    Nothing polls a blog or an RSS feed, so their reach is *unmeasured* — and unmeasured must not
+    read as "nobody saw it", or every product would get a daily shadowban alert for a site it owns
+    outright. There is also no third party who could shadowban it: we serve those pages ourselves.
+    """
+    p = _make_product(engine)
+    ch = _make_channel(engine, p.id, owned)
+    _add_item(
+        engine,
+        p.id,
+        ch.id,
+        status=ContentItemStatus.PUBLISHED,
+        published_at=NOW - timedelta(days=3),
+    )
 
     with Session(engine) as s:
         digest = build_digest(s, p, NOW)
@@ -456,7 +489,7 @@ def test_run_heartbeat_sends_digest_email_when_configured(engine, monkeypatch):
         status=ContentItemStatus.PUBLISHED,
         published_at=NOW - timedelta(hours=1),
     )
-    _add_impressions(engine, p.id, ch.id, 2, NOW - timedelta(hours=1))
+    _add_reach(engine, p.id, ch.id, 2, NOW - timedelta(hours=1))
 
     with Session(engine) as s:
         run_heartbeat(s, NOW)
@@ -486,7 +519,7 @@ def test_heartbeat_api_returns_recent_digests(engine, client):
         status=ContentItemStatus.PUBLISHED,
         published_at=NOW - timedelta(hours=1),
     )
-    _add_impressions(engine, p.id, ch.id, 2, NOW - timedelta(hours=1))
+    _add_reach(engine, p.id, ch.id, 2, NOW - timedelta(hours=1))
 
     with Session(engine) as s:
         run_heartbeat(s, NOW)
@@ -508,3 +541,27 @@ def test_heartbeat_api_empty_product_returns_no_digests(engine, client):
     resp = client.get(f"/api/private/metrics/{p.id}/heartbeat")
     assert resp.status_code == 200
     assert resp.json() == {"digests": []}
+
+
+def test_no_zero_reach_alert_when_the_token_is_dead(engine):
+    """A fenced channel reports frozen reach, not zero reach (S6.2.1/#79).
+
+    `poll_reach` skips a `connect_state=failed` channel on the same guard `publish_scheduled` uses,
+    so no REACH rows accrue while the token is dead. Without this exclusion every dead token would
+    also raise a shadowban alert a week later — two alerts, one cause, and the wrong one first.
+    """
+    p = _make_product(engine)
+    ch = _make_channel(engine, p.id, ChannelType.REDDIT, connect_state=ConnectState.FAILED)
+    _add_item(
+        engine,
+        p.id,
+        ch.id,
+        status=ContentItemStatus.PUBLISHED,
+        published_at=NOW - timedelta(days=3),
+    )
+
+    with Session(engine) as s:
+        digest = build_digest(s, p, NOW)
+        alerts = evaluate_alerts(s, p, digest, NOW)
+
+    assert [a["kind"] for a in alerts] == ["oauth_token_dead"]

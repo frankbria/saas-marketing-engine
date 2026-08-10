@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 
 from sqlmodel import Session, func, select
 
+from app.channels.base import has_platform_reach
 from app.config import settings
 from app.integrations.email import send_digest
 from app.models import (
@@ -30,6 +31,7 @@ from app.models import (
     MetricEvent,
     MetricStage,
 )
+from app.models.channel import ConnectState
 from app.models.product import Product
 from app.modules.alerts import raise_alert
 
@@ -62,10 +64,18 @@ def _failed_count(session: Session, channel_id: int) -> int:
 
 
 def _reach(session: Session, channel_id: int, since: datetime, now: datetime) -> int:
+    """Real platform engagement gained in the window (S6.2.1/#79).
+
+    Reads `REACH`, not `IMPRESSION`. It used to read `IMPRESSION`, which `publish_scheduled` writes
+    one of per published item — so "reach" was the publish count, and the zero-reach alert below
+    was structurally unfireable: anything that published in the window had already written its own
+    non-zero reach. `REACH` rows are deltas from `poll_reach`, so summing them over a window is
+    exactly "engagement earned during this window", and a published-but-unseen post sums to zero.
+    """
     total = session.exec(
         select(func.coalesce(func.sum(MetricEvent.value), 0)).where(
             MetricEvent.channel_id == channel_id,
-            MetricEvent.stage == MetricStage.IMPRESSION,
+            MetricEvent.stage == MetricStage.REACH,
             MetricEvent.occurred_at > since,
             MetricEvent.occurred_at <= now,
         )
@@ -123,6 +133,14 @@ def evaluate_alerts(session: Session, product: Product, digest: dict, now: datet
     # zero impressions over those N days — the shadowban signature.
     window_start = now - timedelta(days=settings.heartbeat_zero_reach_window_days)
     for row in digest["channels"]:
+        channel = channels[row["channel_id"]]
+        if not has_platform_reach(channel.type):
+            continue
+        if channel.connect_state == ConnectState.FAILED:
+            # A fenced channel is not polled (poll_reach skips it on the same guard), so its reach
+            # is frozen, not zero. Alerting here would blame a shadowban for a dead token — and
+            # `oauth_token_dead` above already names the real cause for this same channel.
+            continue
         published_in_window = session.exec(
             select(func.count())
             .select_from(ContentItem)

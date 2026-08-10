@@ -39,7 +39,14 @@ ITEM_FIELDS = {
     "metrics",
 }
 
-ZERO_METRICS = {"impressions": 0, "visits": 0, "signups": 0, "paid": 0, "revenue_cents": 0}
+ZERO_METRICS = {
+    "impressions": 0,
+    "reach": 0,
+    "visits": 0,
+    "signups": 0,
+    "paid": 0,
+    "revenue_cents": 0,
+}
 
 
 @pytest.fixture
@@ -200,6 +207,7 @@ def test_calendar_metrics_join_and_zero_default(ctx):
     by_id = {i["id"]: i for i in body}
     assert by_id[item1]["metrics"] == {
         "impressions": 3,
+        "reach": 0,
         "visits": 2,
         "signups": 1,
         "paid": 1,

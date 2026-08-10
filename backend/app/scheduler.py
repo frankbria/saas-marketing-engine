@@ -19,6 +19,7 @@ from app.modules.crank.publish import pace_content, publish_scheduled
 from app.modules.crank.video_pipeline import advance_video_renders
 from app.modules.heartbeat import run_heartbeat
 from app.modules.media.orchestrator import run_provisioner_tick
+from app.modules.metrics.reach import poll_reach
 from app.worker import enqueue, run_due_jobs
 
 
@@ -81,6 +82,14 @@ def _podcast_render_tick() -> None:
         advance_podcast_renders(session, datetime.now(UTC))
 
 
+def _reach_poll_tick() -> None:
+    # S6.2.1 (#79): poll real platform engagement for recently published items. Bounded to the
+    # zero-reach window and per-item isolated; poll_reach never raises, and its cold path (no
+    # published items in window) touches no credential and no network.
+    with Session(engine) as session:
+        poll_reach(session, datetime.now(UTC))
+
+
 def create_scheduler() -> BackgroundScheduler:
     """Build (but don't start) the scheduler with the v1 interval jobs."""
     scheduler = BackgroundScheduler()
@@ -119,5 +128,11 @@ def create_scheduler() -> BackgroundScheduler:
         "interval",
         seconds=settings.podcast_render_tick_seconds,
         id="podcast_render",
+    )
+    scheduler.add_job(
+        _reach_poll_tick,
+        "interval",
+        seconds=settings.reach_poll_interval_seconds,
+        id="reach_poll",
     )
     return scheduler

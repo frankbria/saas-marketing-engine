@@ -67,7 +67,7 @@ def test_funnel_empty_product_returns_zeros(ctx):
 
     assert resp.status_code == 200
     assert resp.json() == {
-        "stages": {"impressions": 0, "visits": 0, "signups": 0, "paid": 0},
+        "stages": {"impressions": 0, "reach": 0, "visits": 0, "signups": 0, "paid": 0},
         "revenue_cents": 0,
         "rows": [],
     }
@@ -185,7 +185,7 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert resp.status_code == 200
     body = resp.json()
 
-    assert body["stages"] == {"impressions": 4, "visits": 4, "signups": 1, "paid": 2}
+    assert body["stages"] == {"impressions": 4, "reach": 0, "visits": 4, "signups": 1, "paid": 2}
     assert body["revenue_cents"] == 6000
 
     rows = body["rows"]
@@ -198,6 +198,8 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert row_item1["title"] == "Item One"
     assert row_item1["external_url"] == "https://acme.example/item1"
     assert row_item1["impressions"] == 3
+    # reddit has a platform counter, so an integer (0 = polled and genuinely unseen)
+    assert row_item1["reach"] == 0
     assert row_item1["visits"] == 2
     assert row_item1["signups"] == 1
     assert row_item1["paid"] == 1
@@ -210,6 +212,8 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert row_item2["title"] == "Item Two"
     assert row_item2["external_url"] is None
     assert row_item2["impressions"] == 1
+    # blog is owned — no platform counter, so reach is null (unmeasured), never 0 (unseen)
+    assert row_item2["reach"] is None
     assert row_item2["visits"] == 0
     assert row_item2["signups"] == 0
     assert row_item2["paid"] == 0
@@ -223,6 +227,7 @@ def test_funnel_seeded_scenario_stage_totals_and_rows(ctx):
     assert row_channel_only["external_url"] is None
     assert row_channel_only["visits"] == 1
     assert row_channel_only["impressions"] == 0
+    assert row_channel_only["reach"] is None
 
     # unattributed row always last
     row_unattributed = rows[3]

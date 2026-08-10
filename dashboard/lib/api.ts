@@ -150,6 +150,11 @@ export interface ContentItem {
 // metrics (zeros when none). Newest first, same ordering the backend returns.
 export interface CalendarItemMetrics {
   impressions: number
+  // S6.2.1: real platform engagement polled back from Reddit/YouTube — distinct from
+  // `impressions`, which is the publish counter (one per published item). `null` means the channel
+  // has no platform counter at all (owned blog/podcast): unmeasured, NOT zero. Render it as "—";
+  // showing 0 would claim nobody saw a post we never measured.
+  reach: number | null
   visits: number
   signups: number
   paid: number
@@ -176,6 +181,7 @@ export interface CalendarItem {
 // channel_id/content_item_id row holds the unattributed remainder).
 export interface FunnelStages {
   impressions: number
+  reach: number
   visits: number
   signups: number
   paid: number
@@ -188,6 +194,7 @@ export interface FunnelRow {
   title: string | null
   external_url: string | null
   impressions: number
+  reach: number | null  // null = unmeasured (owned channel), not zero — see CalendarItemMetrics
   visits: number
   signups: number
   paid: number

@@ -41,6 +41,12 @@ class ChannelAdapter(Protocol):
     # Logical vault key for this channel's secret (see secrets.vault.get_credential); None when the
     # adapter needs no credential (owned blog writes to local disk).
     credential_key: str | None
+    # Whether this platform exposes an engagement counter we can poll back (S6.2.1). False for
+    # owned infra (blog, podcast): there is no third party to hide our posts, so those channels are
+    # never polled and are excluded from the zero-reach shadowban alert rather than silently
+    # passing it. This is a *static* declaration — the heartbeat needs the answer without holding
+    # an item or a credential — whereas `fetch_reach` answers per item, per tick.
+    has_platform_reach: bool
 
     def publish(
         self, item: ContentItem, product: Product, channel: Channel, creds: str | None
@@ -49,6 +55,36 @@ class ChannelAdapter(Protocol):
     def delete(
         self, external_url: str, product: Product, channel: Channel, creds: str | None
     ) -> None: ...
+
+    def fetch_reach(
+        self, item: ContentItem, product: Product, channel: Channel, creds: str | None
+    ) -> int | None:
+        """This item's **cumulative** engagement count on the platform, or None if unavailable.
+
+        Cumulative (not a delta) because that is what the platforms report; `poll_reach` diffs it
+        against what it has already recorded.
+
+        `None` means the platform has no number for this item — it was never published, the post
+        has been deleted, or the response shape drifted. Failures are *not* folded into `None`:
+        transient ones raise `Retryable` and dead credentials raise `AuthFailure`, exactly as in
+        `publish`, so the poll can tell "the platform says nobody saw it" apart from "we could not
+        ask". Only the first of those may ever reach the zero-reach alert.
+        """
+        ...
+
+
+def has_platform_reach(channel_type: ChannelType) -> bool:
+    """Whether this channel type has a platform engagement counter worth reading (S6.2.1/#79).
+
+    False for owned infra (blog, podcast) and for types with no v1 adapter (x, instagram). For
+    those, reach is **unmeasured** — which is not the same as zero, and must never be rendered or
+    alerted on as if it were. Every reader of reach (the poll, the shadowban alert, the funnel
+    rollup) routes through here so "unmeasured" means one thing across the app.
+    """
+    try:
+        return get_adapter(channel_type).has_platform_reach
+    except LookupError:
+        return False
 
 
 def get_adapter(channel_type: ChannelType) -> ChannelAdapter:
