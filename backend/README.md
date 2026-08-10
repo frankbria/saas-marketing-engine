@@ -229,9 +229,14 @@ Module skeleton under `app/` (`modules/{strategy,setup,qa,crank,metrics}`, `chan
   whenever the lead resolved (not just `product_id`).
 - `modules/metrics/funnel.py` + `api/private/metrics.py` — `GET
   /api/private/metrics/{product_id}/funnel` (404 unknown product) returns stage totals
-  (`impressions`/`visits`/`signups`/`paid`) + `revenue_cents` plus per-`(channel, content_item)`
-  attribution rows, sorted by revenue then impressions; unattributed events roll into one
-  trailing row. Portfolio (multi-product) roll-up is deferred (TECH_SPEC §14).
+  (`published`/`reach`/`visits`/`signups`/`paid`) + `revenue_cents` plus per-`(channel,
+  content_item)` attribution rows, sorted by revenue then items published; unattributed events
+  roll into one trailing row. Portfolio (multi-product) roll-up is deferred (TECH_SPEC §14).
+  `published` counts items posted (one row per published item) and `reach` is the engagement
+  polled back from the platforms — the key was `impressions` until S6.1.1 (#88), which read as
+  audience and is how a publish count passed for one. The stored `metric_event.stage` value is
+  still the legacy `"impression"`; see `MetricStage.PUBLISHED` for why, and what renaming it
+  would require.
 - `dashboard/app/products/[id]/funnel.tsx` — renders the rollup as the product page's **Funnel**
   section.
 
