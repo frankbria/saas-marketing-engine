@@ -47,7 +47,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/srv/sme /etc/nginx/sites-enabled /etc/nginx/snippets
+ReadWritePaths=/srv/sme /etc/nginx/sme-sites
 
 StandardOutput=journal
 StandardError=journal

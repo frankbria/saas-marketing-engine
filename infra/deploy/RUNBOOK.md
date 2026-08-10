@@ -18,6 +18,7 @@ the box**.
 | `/srv/sme/workspace` | per-product workspaces — **this is nginx's document root** (S4.5.1/#78) |
 | `/srv/sme/sme.db` | SQLite (WAL) |
 | `/etc/sme/sme.env` | environment + secrets, `root:sme` `0640` |
+| `/etc/nginx/sme-sites/` | engine-generated vhosts (sme-owned; pulled in by `conf.d/sme-sites.conf`) |
 | `/etc/nginx/snippets/sme-*.conf` | ACME + public-API includes |
 | `/etc/nginx/snippets/sme-tls/<domain>/` | per-domain TLS, written by `enable-tls.sh` |
 | `/usr/local/sbin/sme-nginx-reload` | the one command `sme` may run as root |
