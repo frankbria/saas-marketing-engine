@@ -92,15 +92,28 @@ if [ -n "$PUBLIC_HOST" ]; then
         fail "/api/private/* returned $PRIV_CODE through the public vhost — expected 404"
     fi
 
-    FUNNEL_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+    # Reachability, asserted unambiguously. A status code alone cannot prove this: nginx returns
+    # 404 when it blocks the path, and the app *also* returns 404 for an unknown product slug, so
+    # "HTTP 404" is consistent with both success and total failure. Discriminate on the body
+    # instead — FastAPI answers with JSON (`{"detail": ...}`), nginx with its own HTML error page.
+    FUNNEL_BODY="$(curl -sS --max-time 5 \
         -X POST -H "Host: $PUBLIC_HOST" -H 'Content-Type: application/json' -d '{}' \
-        "http://127.0.0.1/api/funnel/nonexistent/visit" || echo 000)"
-    # Anything that is not 404-from-nginx proves the route reached the app. The app's own answer
-    # for an unknown slug (404/422) is not what is under test here — reachability is.
-    if [ "$FUNNEL_CODE" != "000" ]; then
-        pass "/api/funnel/* is proxied to the app (HTTP $FUNNEL_CODE)"
+        "http://127.0.0.1/api/funnel/__verify__/visit" 2>/dev/null || echo '')"
+    if printf '%s' "$FUNNEL_BODY" | grep -q '"detail"'; then
+        pass "/api/funnel/* reaches the app (JSON error body, not an nginx page)"
     else
-        fail "/api/funnel/* did not reach the app"
+        fail "/api/funnel/* did not reach the app — got: $(printf '%s' "${FUNNEL_BODY:-<empty>}" | head -c 80)"
+    fi
+
+    # The private path must be the *opposite*: nginx's own page, never the app's JSON. Checking
+    # only the status would let a future `proxy_pass /api/` regression pass silently if the app
+    # happened to 404 too.
+    PRIV_BODY="$(curl -sS --max-time 5 -H "Host: $PUBLIC_HOST" \
+        "http://127.0.0.1/api/private/products" 2>/dev/null || echo '')"
+    if printf '%s' "$PRIV_BODY" | grep -q '"detail"'; then
+        fail "/api/private/* reached the APP through the public vhost — the allowlist is broken"
+    else
+        pass "/api/private/* is answered by nginx, never proxied"
     fi
 else
     say "public surface allowlist"

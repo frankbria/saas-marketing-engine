@@ -130,6 +130,10 @@ path is baked into each vhost when `setup_site` runs, so relocating the workspac
 **Certificate issuance times out.** Almost always the dotfile deny above. Confirm the vhost
 includes `sme-acme.conf`, then re-run `enable-tls.sh` — its preflight will tell you directly.
 
+**`git` says "dubious ownership" in a release dir.** You are running git as root against a
+checkout owned by `sme`. Harmless — `deploy.sh` reads the SHA before it chowns, so deploys are
+unaffected. For ad-hoc inspection use `runuser -u sme -- git -C /opt/sme/current ...`.
+
 **nginx reload fails.** `nginx -t` prints the offending file and line. The generated vhost is left
 on disk deliberately, so fix the cause and run `/usr/local/sbin/sme-nginx-reload` by hand rather
 than re-running a `setup_site` job that spends tokens.
