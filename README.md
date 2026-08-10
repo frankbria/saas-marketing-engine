@@ -24,7 +24,7 @@ PRD.md · TECH_SPEC.md · USER_STORIES.md · tasks/todo.md
 cd backend && uv sync
 uv run uvicorn app.main:app --reload --port 8010   # http://localhost:8010/health
 uv run pytest
-uv run pytest --cov=app --cov-report= && uv run coverage report   # NFR-7 gate, see backend/README.md
+uv run pytest -rs --cov=app --cov-report= && uv run coverage report --fail-under=0  # coverage; gate is CI's (backend/README.md)
 
 # dashboard
 cd dashboard && npm install

@@ -17,9 +17,11 @@ uv run ruff check . && uv run black --check .   # lint + format
 ### Coverage (NFR-7, S0.6)
 
 ```bash
-uv run pytest --cov=app --cov-report=          # collect coverage data
-uv run coverage report                          # print the table AND apply the gate
+uv run pytest -rs --cov=app --cov-report=       # collect coverage data (-rs shows what skipped)
+uv run coverage report --fail-under=0           # just the number — use this on a dev box
 uv run coverage html                            # htmlcov/index.html for the line detail
+
+uv run coverage report                          # apply the real gate (needs CI's services, below)
 ```
 
 **`coverage report` is the gate, not pytest.** pytest-cov prints `FAIL Required test coverage
@@ -31,11 +33,27 @@ The threshold lives in `pyproject.toml` (`[tool.coverage.report] fail_under`), s
 gate identically. It is a **ratchet**: raise it when coverage rises, never lower it to make a red
 build green — add the tests instead.
 
-NFR-7 asks for >85%. **CI is the authoritative number** — CI and a dev box skip different suites
-(CI has Redis and Postgres and runs those; a dev box usually has `SME_ANTHROPIC_API_KEY` /
-`SME_STRIPE_API_KEY` unset), so the totals differ by ~1.5 points. Measured 2026-08-10: **CI
-89.95%**, local 91.48%. The gate is **89**. Expect your local number to read higher than the one
-CI enforces.
+NFR-7 asks for >85%. **CI is the authoritative number** and the gate is **92** (CI measured
+92.13% on 2026-08-10: 661 passed, 11 skipped).
+
+**Expect your local number to read lower than CI's, and don't chase it.** CI runs everything
+except the 11 paid-API tests; a dev box additionally skips whatever it lacks, so a bare
+`uv run coverage report` on a laptop fails the gate through no fault of your change — that is
+why the recipe above uses `--fail-under=0` locally. Judge a change by whether it *added* uncovered
+lines (`coverage html` shows exactly which), and let CI own the threshold.
+
+To actually reproduce CI's number, supply what CI supplies:
+
+| Skipped without it | Provide |
+|---|---|
+| video/podcast render, media queue | `ffmpeg` + `ffprobe` on PATH, `fonts-dejavu-core` |
+| Celery round-trips | `SME_CELERY_BROKER_URL` (see `infra/compose.dev.yml`) |
+| Postgres path | `SME_TEST_POSTGRES_URL` |
+| brand kit, pricing, briefs, critic | `SME_ANTHROPIC_API_KEY` (real API calls — skipped in CI too) |
+| checkout, Stripe setup | `SME_STRIPE_API_KEY` (real API calls — skipped in CI too) |
+
+`-rs` on a pytest run prints exactly which of these are skipping and why. CI passes it always —
+a silently-skipped suite is how the render paths went uncovered in CI unnoticed.
 
 Coverage flags are deliberately **not** in `addopts`: `fail_under` would fail any targeted
 single-file run. Exclusions are inline `# pragma: no cover` with a reason on the same line —

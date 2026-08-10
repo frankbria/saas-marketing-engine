@@ -54,18 +54,23 @@ source = ["app"]
 show_missing = true
 # The table lists only files with gaps; 100%-covered files are summarised as a count.
 skip_covered = true
+# Two decimals: the gate is compared against the exact total, so the exact total is what the
+# report should print. A bare "92%" hides whether the next commit has 0.4 points of room.
+precision = 2
 # Ratchet, not an aspiration. NFR-7 asks for >85%.
 #
-# The gate tracks the CI number, which is the authoritative one: CI and a dev box skip
-# *different* test sets (CI has Redis and Postgres and runs those suites; a dev box has the
-# Anthropic/Stripe keys unset and Redis unaddressed), so the two totals differ by ~1.5 points.
-# Measured 2026-08-10: CI 89.95%, local 91.48%. The gate sits just under the CI figure.
+# The gate tracks the CI number — CI is the authoritative environment, and the only one that
+# runs everything short of the paid-API tests (661 passed / 11 skipped on 2026-08-10, all 11
+# gated on SME_ANTHROPIC_API_KEY or SME_STRIPE_API_KEY). A dev box without Redis, Postgres
+# and those env vars reads *lower*; do not retune this to a local number.
+#
+# Measured 2026-08-10 in CI: 92.13%. Gate at 92.
 #
 # Raise this when coverage rises; never lower it to make a red build green — add the tests.
 # `uv run coverage report` is what enforces it (see .github/workflows/ci.yml): pytest-cov does
 # NOT reliably fail the run on a config-only `fail_under` — it printed FAIL and still exited 0
 # in CI. coverage.py's own CLI exits 2. Do not "simplify" the gate back into the pytest step.
-fail_under = 89
+fail_under = 92
 exclude_also = [
     # Typing-only branches never execute at runtime.
     "if TYPE_CHECKING:",
