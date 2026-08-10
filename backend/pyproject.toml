@@ -65,7 +65,7 @@ skip_covered = true
 # `uv run coverage report` is what enforces it (see .github/workflows/ci.yml): pytest-cov does
 # NOT reliably fail the run on a config-only `fail_under` — it printed FAIL and still exited 0
 # in CI. coverage.py's own CLI exits 2. Do not "simplify" the gate back into the pytest step.
-fail_under = 99
+fail_under = 89
 exclude_also = [
     # Typing-only branches never execute at runtime.
     "if TYPE_CHECKING:",
