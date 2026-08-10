@@ -41,7 +41,13 @@ install -d -o "$SME_USER" -g "$SME_USER" -m 755 "$RELEASES_ROOT" "$RELEASES_ROOT
 # S4.5.1/#78, so it needs traverse+read. The credentials vault is a SIBLING of site/, never
 # beneath it (TECH_SPEC §11) — lock it down separately.
 install -d -o "$SME_USER" -g "$SME_USER" -m 700 "$SME_HOME/vault"
-install -d -o root -g root -m 750 /etc/sme
+# Group-owned by sme, not root:root. The env file inside is root:sme 0640 — group ownership that
+# promises the service user can read it — and a root:root parent silently breaks that promise,
+# since traversal needs +x on every component. systemd reads EnvironmentFile as root before
+# dropping privileges, so the service starts either way; what breaks is every operator and
+# debugging path that runs a command *as* sme. The secrets are in the process environment
+# regardless, so the stricter parent bought nothing.
+install -d -o root -g "$SME_USER" -m 750 /etc/sme
 
 say "env file"
 if [ ! -f "$ENV_FILE" ]; then
