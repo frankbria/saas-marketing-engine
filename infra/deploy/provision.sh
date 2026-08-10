@@ -59,6 +59,47 @@ say "ACME webroot"
 install -d -o root -g www-data -m 755 "$ACME_WEBROOT" "$ACME_WEBROOT/.well-known" \
     "$ACME_WEBROOT/.well-known/acme-challenge"
 
+say "node toolchain"
+# The dashboard must run as `sme`, and nvm installs node under /root/.nvm — which is unreachable
+# for any non-root user because /root is mode 700 (traversal needs +x on every path component, so
+# permissive inner directories do not help). Copy the pinned major somewhere root-owned and
+# world-readable instead of loosening /root, which would expose every other project's secrets on
+# this shared box.
+NODE_TARGET=/usr/local/lib/sme-node
+WANT_MAJOR="$(tr -d 'v \n' < "$REPO_ROOT/.nvmrc")"
+if [ -x "$NODE_TARGET/bin/node" ] && \
+   [ "$("$NODE_TARGET/bin/node" -v | sed 's/^v\([0-9]*\).*/\1/')" = "$WANT_MAJOR" ]; then
+    echo "node $("$NODE_TARGET/bin/node" -v) already installed at $NODE_TARGET"
+else
+    SRC=""
+    # Prefer a system node of the right major; fall back to whatever nvm has.
+    if command -v node >/dev/null && [ "$(node -v | sed 's/^v\([0-9]*\).*/\1/')" = "$WANT_MAJOR" ]; then
+        echo "system node $(node -v) already matches .nvmrc — no copy needed"
+        NODE_TARGET="$(dirname "$(dirname "$(command -v node)")")"
+    else
+        for candidate in /root/.nvm/versions/node/v"$WANT_MAJOR".*; do
+            [ -x "$candidate/bin/node" ] && SRC="$candidate"
+        done
+        if [ -z "$SRC" ]; then
+            echo "provision: no node v$WANT_MAJOR found (need it for the Next dashboard)." >&2
+            echo "  Install one, e.g.:  nvm install $WANT_MAJOR" >&2
+            echo "  then re-run this script." >&2
+            exit 1
+        fi
+        rm -rf "$NODE_TARGET"
+        cp -a "$SRC" "$NODE_TARGET"
+        chown -R root:root "$NODE_TARGET"
+        chmod -R a+rX "$NODE_TARGET"
+        echo "installed node $("$NODE_TARGET/bin/node" -v) at $NODE_TARGET (from $SRC)"
+    fi
+fi
+# Prove the service user can actually execute it — the whole point of this step.
+if ! sudo -u "$SME_USER" "$NODE_TARGET/bin/node" -v >/dev/null 2>&1; then
+    echo "provision: $SME_USER cannot execute $NODE_TARGET/bin/node — the dashboard unit will fail" >&2
+    exit 1
+fi
+echo "verified: $SME_USER can execute node"
+
 say "nginx snippets"
 install -d -m 755 "$SNIPPETS_DIR" "$SNIPPETS_DIR/sme-tls"
 install -o root -g root -m 644 "$DEPLOY_DIR/nginx/sme-acme.conf" "$SNIPPETS_DIR/sme-acme.conf"
