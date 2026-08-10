@@ -238,7 +238,7 @@ def test_publish_due_item_records_result_and_metric(session):
     assert it.external_url == "https://acme.example/blog/hello"
     assert _utc(it.published_at) == NOW
     metric = session.exec(select(MetricEvent)).one()
-    assert metric.stage == MetricStage.IMPRESSION
+    assert metric.stage == MetricStage.PUBLISHED
     assert metric.content_item_id == it.id and metric.channel_id == c.id
     assert metric.source == f"publish:{it.idempotency_key}"
 

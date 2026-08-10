@@ -14,10 +14,21 @@ from sqlmodel import Field, SQLModel
 
 
 class MetricStage(StrEnum):
-    IMPRESSION = "impression"
+    # One row per item published — a publish counter, never an audience measure. It was called
+    # IMPRESSION for six stories, and that name is what let the original defect survive: summing
+    # "impressions" looked reasonable everywhere it appeared (S6.1.1, #88).
+    #
+    # The **stored value stays `"impression"` on purpose.** v1 has no Alembic — `app/db.py` can add
+    # a column but cannot rewrite values — so changing it would need
+    # `UPDATE metric_event SET stage='published' WHERE stage='impression'` run by hand against
+    # every deployed database. Miss one and historical rows stop matching the filter: the funnel
+    # silently under-reports instead of failing. A stale string in the storage layer is the
+    # cheaper problem, and `test_metric_stage_published_keeps_its_legacy_value` fails loudly if
+    # anyone renames it without doing that backfill first.
+    PUBLISHED = "impression"
     # S6.2.1: real platform engagement polled back from Reddit/YouTube, kept strictly apart from
-    # IMPRESSION (which is a publish counter — one row per published item). Conflating them is what
-    # made the zero-reach shadowban alert unfireable: publishing wrote the very rows the alert read.
+    # PUBLISHED. Conflating them is what made the zero-reach shadowban alert unfireable:
+    # publishing wrote the very rows the alert read.
     REACH = "reach"
     VISIT = "visit"
     SIGNUP = "signup"

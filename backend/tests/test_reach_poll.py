@@ -404,7 +404,7 @@ def _publish_poll_and_evaluate(session: Session, product: Product, cumulative: i
 def test_zero_reach_alert_fires_for_a_published_post_nobody_saw(engine):
     """The headline criterion of #79 — and the assertion that was impossible before it.
 
-    Publishing writes an `IMPRESSION` row. While `_reach()` summed `IMPRESSION`, that row *was*
+    Publishing writes an `PUBLISHED` row. While `_reach()` summed `PUBLISHED`, that row *was*
     the reach, so `published_in_window > 0` implied `reach >= 1` and this alert could never fire,
     no matter how invisible the post was. Now publishing and reach are different stages: the post
     is live, the platform reports zero engagement, and the shadowban signal gets through.
@@ -418,10 +418,10 @@ def test_zero_reach_alert_fires_for_a_published_post_nobody_saw(engine):
 
         # ...and the publish counter is still intact and still separate — the fix separates the
         # two stages rather than trading one broken number for another.
-        impressions = s.exec(
-            select(MetricEvent).where(MetricEvent.stage == MetricStage.IMPRESSION)
+        published_rows = s.exec(
+            select(MetricEvent).where(MetricEvent.stage == MetricStage.PUBLISHED)
         ).all()
-        assert len(impressions) == 1
+        assert len(published_rows) == 1
         assert _reach_rows(s) == []
 
 

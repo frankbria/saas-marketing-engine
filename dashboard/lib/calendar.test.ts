@@ -21,7 +21,7 @@ function item(overrides: Partial<CalendarItem> = {}): CalendarItem {
     created_at: "2026-07-10T12:00:00Z",
     external_url: null,
     metrics: {
-      impressions: 0,
+      published: 0,
       reach: 0,
       visits: 0,
       signups: 0,

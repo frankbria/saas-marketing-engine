@@ -155,9 +155,11 @@ export interface ContentItem {
 // S6.3: content calendar — every content item across all statuses with its per-item funnel
 // metrics (zeros when none). Newest first, same ordering the backend returns.
 export interface CalendarItemMetrics {
-  impressions: number
+  // S6.1.1 (#88): items posted. Called `impressions` until then, which read as audience and is
+  // exactly how the publish-count-as-reach defect survived six stories.
+  published: number
   // S6.2.1: real platform engagement polled back from Reddit/YouTube — distinct from
-  // `impressions`, which is the publish counter (one per published item). `null` means the channel
+  // `published`, which is the publish counter (one per published item). `null` means the channel
   // has no platform counter at all (owned blog/podcast): unmeasured, NOT zero. Render it as "—";
   // showing 0 would claim nobody saw a post we never measured.
   reach: number | null
@@ -186,7 +188,7 @@ export interface CalendarItem {
 // are product-wide; rows attribute each stage to the channel/content item that drove it (a null
 // channel_id/content_item_id row holds the unattributed remainder).
 export interface FunnelStages {
-  impressions: number
+  published: number
   reach: number
   visits: number
   signups: number
@@ -199,7 +201,7 @@ export interface FunnelRow {
   content_item_id: number | null
   title: string | null
   external_url: string | null
-  impressions: number
+  published: number
   reach: number | null  // null = unmeasured (owned channel), not zero — see CalendarItemMetrics
   visits: number
   signups: number
@@ -416,7 +418,7 @@ export const setQaItemStatus = (
 export const goLive = (productId: number) =>
   apiFetch<Product>(`/qa/${productId}/go-live`, { method: "POST" })
 
-// S6.1: per-product attributed funnel (impressions → visits → signups → paid → revenue), grouped
+// S6.1: per-product attributed funnel (published → reach → visits → signups → paid → revenue), grouped
 // by the channel/content item that drove each conversion. 404s for an unknown product.
 export const getFunnel = (productId: number) =>
   apiFetch<Funnel>(`/metrics/${productId}/funnel`, { method: "GET" })

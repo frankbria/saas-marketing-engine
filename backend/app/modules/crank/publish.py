@@ -250,7 +250,7 @@ def publish_scheduled(
                 product_id=product.id,
                 channel_id=channel.id,
                 content_item_id=item.id,
-                stage=MetricStage.IMPRESSION,
+                stage=MetricStage.PUBLISHED,
                 value=1,
                 source=f"publish:{item.idempotency_key}",
             )

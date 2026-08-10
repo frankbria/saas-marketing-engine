@@ -91,8 +91,8 @@ def _add_item(engine, product_id: int, channel_id: int, *, status, published_at=
 def _add_reach(engine, product_id: int, channel_id: int, count: int, occurred_at: datetime):
     """Record `count` units of real platform reach.
 
-    Writes `REACH`, not `IMPRESSION` (S6.2.1/#79): the digest's `reach` field and the zero-reach
-    alert both read the polled-engagement stage now. `IMPRESSION` is the publish counter, and while
+    Writes `REACH`, not `PUBLISHED` (S6.2.1/#79): the digest's `reach` field and the zero-reach
+    alert both read the polled-engagement stage now. `PUBLISHED` is the publish counter, and while
     the two shared a stage the alert below could never fire — anything published had already
     written its own non-zero "reach".
     """

@@ -123,7 +123,7 @@ export function CalendarGrid({ items }: { items: CalendarItem[] }) {
 
 function ItemChip({ item }: { item: CalendarItem }) {
   const hasPerformance =
-    item.metrics.impressions > 0 || item.metrics.revenue_cents > 0
+    item.metrics.published > 0 || item.metrics.revenue_cents > 0
 
   return (
     <div className="flex min-w-0 flex-col gap-0.5 rounded-md border p-1 text-xs">
@@ -145,9 +145,10 @@ function ItemChip({ item }: { item: CalendarItem }) {
         {statusLabel(item.status)}
       </span>
       {hasPerformance && (
-        // "reach", not "impr": `impressions` is the publish counter (always 1 for a published
-        // item), so labelling it "impr" read as audience when it never was (S6.2.1/#79). A null
-        // reach (owned channel, no platform counter) renders "— reach": unmeasured, not unseen.
+        // "reach", not "impr": `published` is the publish counter (always 1 for a published
+        // item), so labelling it "impr" read as audience when it never was (S6.2.1/#79, renamed
+        // in S6.1.1/#88). A null reach (owned channel, no platform counter) renders "— reach":
+        // unmeasured, not unseen.
         <span className="truncate text-muted-foreground">
           {formatReach(item.metrics.reach)} reach ·{" "}
           {formatCents(item.metrics.revenue_cents)}
