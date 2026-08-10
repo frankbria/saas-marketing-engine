@@ -18,13 +18,18 @@ dependencies = [
     "praw==7.8.1",
     "celery[redis]==5.6.3",
     "psycopg[binary]==3.3.4",
+    # S5.0.1 (#84): imported at module scope by the RunPod provisioner, the YouTube uploader and
+    # both ElevenLabs TTS paths. It used to resolve only because `anthropic` pulled it in
+    # transitively — an anthropic release that swapped its HTTP client would have broken GPU
+    # provisioning and publishing at import time, in production, blamed on an unrelated bump.
+    # The GPU worker image installs `--no-dev` from the lockfile, so the split is load-bearing.
+    "httpx==0.28.1",
 ]
 
 [dependency-groups]
 dev = [
     "pytest==8.4.1",
     "pytest-cov==7.0.0",
-    "httpx==0.28.1",
     "ruff==0.12.5",
     "black==25.1.0",
 ]

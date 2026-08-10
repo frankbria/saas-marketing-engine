@@ -1069,6 +1069,7 @@ dependencies = [
     { name = "celery", extra = ["redis"] },
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "jinja2" },
     { name = "praw" },
     { name = "psycopg", extra = ["binary"] },
@@ -1082,7 +1083,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "black" },
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -1095,6 +1095,7 @@ requires-dist = [
     { name = "celery", extras = ["redis"], specifier = "==5.6.3" },
     { name = "cryptography", specifier = "==45.0.5" },
     { name = "fastapi", specifier = "==0.116.1" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "jinja2", specifier = "==3.1.4" },
     { name = "praw", specifier = "==7.8.1" },
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.4" },
@@ -1108,7 +1109,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "black", specifier = "==25.1.0" },
-    { name = "httpx", specifier = "==0.28.1" },
     { name = "pytest", specifier = "==8.4.1" },
     { name = "pytest-cov", specifier = "==7.0.0" },
     { name = "ruff", specifier = "==0.12.5" },
