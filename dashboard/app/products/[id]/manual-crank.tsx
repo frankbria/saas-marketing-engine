@@ -99,7 +99,7 @@ export function ManualCrank({
       {live && crankable.length === 0 && (
         <p className="text-sm text-muted-foreground">
           No channel is eligible to crank. A channel must be enabled,
-          autonomous, unpaused, and connected.
+          autonomous, unpaused, and not in a failed connection state.
         </p>
       )}
 
