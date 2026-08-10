@@ -59,6 +59,25 @@ say "ACME webroot"
 install -d -o root -g www-data -m 755 "$ACME_WEBROOT" "$ACME_WEBROOT/.well-known" \
     "$ACME_WEBROOT/.well-known/acme-challenge"
 
+say "uv toolchain"
+# Same trap as node, different tool: /usr/local/bin/uv on this box is a symlink into
+# /home/podcastfy/.local/bin (mode 750). A "system path" is not automatically a system install on
+# a shared box — resolve it and copy the real binary somewhere every user can execute.
+UV_TARGET=/usr/local/lib/sme-uv
+UV_SRC="$(command -v uv || true)"
+[ -n "$UV_SRC" ] || { echo "provision: uv not found on PATH — install it first" >&2; exit 1; }
+install -d -m 755 "$UV_TARGET"
+# cp -L dereferences the symlink chain so we copy the executable, not a dangling pointer into
+# a home directory we must never depend on.
+cp -Lf "$UV_SRC" "$UV_TARGET/uv"
+chown root:root "$UV_TARGET/uv"
+chmod 0755 "$UV_TARGET/uv"
+if ! sudo -u "$SME_USER" "$UV_TARGET/uv" --version >/dev/null 2>&1; then
+    echo "provision: $SME_USER cannot execute $UV_TARGET/uv" >&2
+    exit 1
+fi
+echo "installed $("$UV_TARGET/uv" --version) at $UV_TARGET (from $UV_SRC), $SME_USER can execute it"
+
 say "node toolchain"
 # The dashboard must run as `sme`, and nvm installs node under /root/.nvm — which is unreachable
 # for any non-root user because /root is mode 700 (traversal needs +x on every path component, so

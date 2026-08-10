@@ -27,6 +27,8 @@ KEEP_RELEASES=5
 set -a; . "$ENV_FILE"; set +a
 
 say() { printf '\n== %s\n' "$1"; }
+# Build steps run as the service user, never as root — see "ownership" below.
+run_as_sme() { runuser -u "$SME_USER" -- "$@"; }
 RELEASE="$RELEASES_ROOT/releases/$(date -u +%Y%m%d-%H%M%S)"
 
 say "port check"
@@ -48,18 +50,24 @@ git clone --depth 1 --branch "$REF" "$REPO_URL" "$RELEASE" 2>&1 | tail -2
 DEPLOYED_SHA="$(git -C "$RELEASE" rev-parse --short HEAD)"
 echo "checked out $REF @ $DEPLOYED_SHA"
 
+say "ownership"
+# Chown BEFORE building, and build as the service user. Building as root on this box put the
+# venv's interpreter in /root/.local/share/uv/python — a path `sme` cannot traverse (/root is
+# mode 700), so the API died with 203/EXEC while every file looked correct. Build user == runtime
+# user is the fix that holds; chasing each individual path is the fix that keeps breaking.
+chown -R "$SME_USER:$SME_USER" "$RELEASE"
+
 say "backend deps"
-( cd "$RELEASE/backend" && /usr/local/bin/uv sync --frozen 2>&1 | tail -3 )
+# --frozen: install exactly uv.lock, never silently re-resolve on the server.
+( cd "$RELEASE/backend" && run_as_sme "$SME_UV_BIN" sync --frozen 2>&1 | tail -3 )
 
 say "dashboard build"
-# node 20 is this box's default; Next 16 needs the nvm node 24 that .nvmrc pins. Same PATH the
-# dashboard unit uses at runtime, so build and runtime cannot drift.
+# Same PATH the dashboard unit uses at runtime, so build and runtime cannot drift apart.
 ( cd "$RELEASE/dashboard" \
-  && PATH="$SME_NODE_BIN:$PATH" npm ci --no-audit --no-fund 2>&1 | tail -3 \
-  && PATH="$SME_NODE_BIN:$PATH" npm run build 2>&1 | tail -5 )
+  && run_as_sme env PATH="$SME_NODE_BIN:/usr/bin:/bin" npm ci --no-audit --no-fund 2>&1 | tail -3 \
+  && run_as_sme env PATH="$SME_NODE_BIN:/usr/bin:/bin" npm run build 2>&1 | tail -5 )
 
-say "ownership + symlink flip"
-chown -R "$SME_USER:$SME_USER" "$RELEASE"
+say "symlink flip"
 # Atomic swap: `ln -sfn` to a temp name then `mv -T` replaces the symlink in one rename, so the
 # units never observe a missing `current` if this is interrupted.
 ln -sfn "$RELEASE" "$CURRENT_LINK.tmp"

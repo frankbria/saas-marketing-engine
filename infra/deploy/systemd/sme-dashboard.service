@@ -6,6 +6,9 @@ Description=SaaS Marketing Engine operator dashboard (Next.js)
 Documentation=https://github.com/frankbria/saas-marketing-engine/blob/main/infra/deploy/RUNBOOK.md
 After=network-online.target sme-api.service
 Wants=network-online.target
+# StartLimit* belong in [Unit] — systemd ignores them in [Service] with only a log warning.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=exec
@@ -21,8 +24,6 @@ ExecStart=/bin/sh -c 'PATH=${SME_NODE_BIN}:$PATH exec npm run start -- --hostnam
 
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 NoNewPrivileges=true
 PrivateTmp=true
