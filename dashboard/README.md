@@ -10,6 +10,7 @@ dashboard for the SaaS Marketing Engine. Talks to the backend's **private** API
 npm install
 npm run dev          # http://localhost:3010
 npm run test         # vitest
+npm run test:coverage # vitest + v8 coverage over lib/ (reported in CI, not gated)
 npm run typecheck    # tsc --noEmit
 npm run lint         # eslint
 npm run build        # production build

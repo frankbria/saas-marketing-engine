@@ -57,8 +57,11 @@ jobs:
         run: uv run ruff check .
       - name: Format check (black)
         run: uv run black --check .
-      - name: Tests (pytest)
-        run: uv run pytest
+      # NFR-7 (S0.6, #81): the run prints the per-file coverage table and fails below the
+      # `fail_under` ratchet in pyproject.toml. The threshold lives in config, not here, so a
+      # local `uv run pytest --cov=app` gates identically.
+      - name: Tests + coverage (pytest)
+        run: uv run pytest --cov=app --cov-report=term
 
   frontend:
     runs-on: ubuntu-latest
@@ -79,5 +82,7 @@ jobs:
         run: npm run lint
       - name: Typecheck (tsc)
         run: npm run typecheck
-      - name: Tests (vitest)
-        run: npm run test
+      # S0.6 (#81): reported, not gated — the dashboard's tested surface is `lib/` and the
+      # number is here to be watched, not to block a PR. See dashboard/vitest.config.ts.
+      - name: Tests + coverage (vitest)
+        run: npm run test:coverage

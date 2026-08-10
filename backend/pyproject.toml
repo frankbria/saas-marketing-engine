@@ -23,6 +23,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest==8.4.1",
+    "pytest-cov==7.0.0",
     "httpx==0.28.1",
     "ruff==0.12.5",
     "black==25.1.0",
@@ -42,3 +43,27 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+# NFR-7 (S0.6, #81): coverage is measured over the engine logic in `app/` and gated in CI.
+# Coverage flags are NOT in `addopts` on purpose — local runs are targeted (see backend/README.md)
+# and would trip `fail_under` on a single-file run. CI passes `--cov` explicitly.
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/__pycache__/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# Ratchet, not an aspiration: NFR-7 asks for >85%, the suite measured 91% on 2026-08-10.
+# Gate one point under the measured value so the local/CI skip-set difference (GPU and
+# real-service tests skip locally) cannot fail CI on an unrelated change. Raise this when
+# coverage rises — never lower it.
+fail_under = 90
+exclude_also = [
+    # Typing-only branches never execute at runtime.
+    "if TYPE_CHECKING:",
+    # Abstract/unimplemented seams are contracts, not behaviour.
+    "raise NotImplementedError",
+    # Script entrypoints are exercised by running the process, not by pytest.
+    'if __name__ == "__main__":',
+]

@@ -58,10 +58,14 @@ def _real_generate_music(prompt: str, duration_seconds: float) -> bytes:
             "Pin the model into the GPU worker image (infra/gpu-worker/Dockerfile) to enable the "
             "music-bed path — narration-only episodes need no music and never reach this step."
         ) from exc
-    # pragma: no cover - real model call lands with the image pin (deferred infra)
-    from acestep import generate_music_bed  # type: ignore
+    # The real model call lands with the image pin (deferred infra); it cannot run in CI or
+    # locally, so both statements carry their own pragma — a pragma on a bare comment line
+    # excludes nothing.
+    from acestep import generate_music_bed  # type: ignore  # pragma: no cover - needs the model
 
-    return generate_music_bed(prompt=prompt, duration_seconds=duration_seconds)
+    return generate_music_bed(  # pragma: no cover - needs the model
+        prompt=prompt, duration_seconds=duration_seconds
+    )
 
 
 def _probe_duration(path: str) -> float:
