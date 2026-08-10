@@ -111,7 +111,7 @@ The box is **shared with four unrelated projects**. This is the dominant constra
 
 ## Defects found by actually deploying (all fixed)
 
-Seven, none of which a file review would have caught. Six are one pattern — **privilege and path
+Eight, none of which a file review would have caught. Seven are one pattern — **privilege and path
 assumptions that only fail when a different user runs the code**:
 
 1. `StartLimitIntervalSec`/`StartLimitBurst` in `[Service]` — systemd ignores them there with only
@@ -128,6 +128,14 @@ assumptions that only fail when a different user runs the code**:
    sandbox but grants no filesystem permission.
 7. `/etc/sme` was `root:root` 0750, so `sme` could not traverse to the env file its own group
    ownership promised it could read.
+
+8. **`NoNewPrivileges=true` blocked the API's one privileged action** — found by the GLM review,
+   not by me. `deploy_site` shells out to `sudo /usr/local/sbin/sme-nginx-reload`; the kernel
+   refuses every setuid exec under that flag, so `setup_site` would have errored on every retry
+   while the unit looked *more* hardened and `/health` stayed green. **My demo could not have
+   caught it**: I exercised `deploy_site` via `runuser`, which does not apply the unit's sandbox,
+   so I proved a path production never takes. `verify-deploy.sh` now runs the real reload command
+   as `sme` under the unit's own `NoNewPrivileges` setting.
 
 And one weakness in my own verification: `verify-deploy.sh` asserted "funnel is proxied" from a
 status code, but nginx-blocked and app-not-found both return 404 — the check passed identically
