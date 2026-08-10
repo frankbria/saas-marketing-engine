@@ -1,0 +1,30 @@
+# Public API surface for a generated landing-site vhost (S0.5 #80; PORTS.md "Public funnel
+# surface", TECH_SPEC §11, NFR-1).
+#
+# `provision.sh` renders this template to /etc/nginx/snippets/sme-public-api.conf, substituting
+# ${SME_API_PORT}. Every vhost `deploy_site` generates includes the rendered file.
+#
+# The engine runs ONE uvicorn process serving both API surfaces. nginx is the only thing that
+# makes the public/private split real on the wire, and v1 has no auth on the private surface — so
+# an over-broad proxy_pass here is a full compromise of the operator API, not a misconfiguration.
+# The allowlist below is therefore written as "these three paths, then 404 everything else under
+# /api/", never as "proxy /api/ and block the private bits".
+
+# Internet-facing paths, and nothing else:
+#   POST /api/funnel/{slug}/visit
+#   POST /api/funnel/{slug}/lead
+#   POST /api/stripe/webhook
+location ~ ^/api/(funnel/|stripe/webhook$) {
+    proxy_pass http://127.0.0.1:${SME_API_PORT};
+    proxy_set_header Host $host;
+    # The S2.2 per-(slug, IP) rate limiter reads the real client IP from here. Without it every
+    # request appears to come from 127.0.0.1 and one visitor can exhaust the whole window.
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+# Everything else under /api/ — including all of /api/private/* — is not on the internet.
+# 404 rather than 403: a 403 confirms the path exists.
+location /api/ {
+    return 404;
+}

@@ -1,0 +1,68 @@
+[Unit]
+# The engine. One uvicorn process serves BOTH API surfaces (public funnel + private dashboard);
+# nginx is what makes the split real on the wire (PORTS.md). This process also runs the in-process
+# worker loop and the APScheduler ticks — crank, publish, heartbeat digest, media provisioner,
+# video/podcast render collection, reach poll (app/scheduler.py). So "restart the API" and
+# "restart the worker" are the same action here, and there is no separate worker unit: the only
+# Celery consumer is the ephemeral GPU pod at the provider, which this box does not run.
+Description=SaaS Marketing Engine API + in-process worker/scheduler
+Documentation=https://github.com/frankbria/saas-marketing-engine/blob/main/infra/deploy/RUNBOOK.md
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+# StartLimit* live in [Unit], not [Service] — systemd silently ignores them in [Service]
+# ('Unknown key name ... ignoring'), which would have left a crash-loop unthrottled.
+# Don't let a crash-loop spin forever, but never give up permanently either: the operator
+# may not look for days (DoD-2 is an unattended >=2 week run).
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=sme
+Group=sme
+WorkingDirectory=/opt/sme/current/backend
+EnvironmentFile=/etc/sme/sme.env
+
+# --host 127.0.0.1 is load-bearing, not a default: NFR-1 ships no auth on /api/private/*, so the
+# loopback bind plus ufw IS the boundary. Binding 0.0.0.0 would expose the operator API to the
+# internet the moment someone opened the port. verify-deploy.sh asserts this after every deploy.
+# ${SME_UV_BIN}, not /usr/local/bin/uv: on this box that path is a symlink into
+# /home/podcastfy/.local/bin (mode 750), which the `sme` user cannot traverse — exec fails
+# with 203/EXEC. provision.sh installs a copy somewhere root-owned and world-readable.
+#
+# Wrapped in `sh -c` because systemd forbids a variable as the FIRST token of ExecStart — it is
+# expanded, but not used to resolve the binary, so a bare `${SME_UV_BIN} run ...` fails with
+# 203/EXEC just as if the path were wrong. `exec` keeps the shell from lingering as an extra
+# process, so systemd still supervises uvicorn directly.
+ExecStart=/bin/sh -c 'exec ${SME_UV_BIN} run uvicorn app.main:app --host 127.0.0.1 --port ${SME_API_PORT}'
+
+# DoD-2 requires unattended operation for >=2 weeks. Restart on *any* exit, not just failure: a
+# clean-but-unexpected exit still means the crank stopped running.
+Restart=always
+RestartSec=5
+
+# The workspace is the nginx document root (S4.5.1/#78), so the service must be able to write it
+# while staying out of everything else on a box it shares with four other projects.
+#
+# NoNewPrivileges is deliberately NOT set here. This service must run exactly one privileged
+# action — `sudo /usr/local/sbin/sme-nginx-reload`, so a newly generated vhost actually reaches
+# the wire — and NoNewPrivileges makes the kernel refuse every setuid exec, so sudo fails with
+# "the 'no new privileges' flag is set". The failure is quiet in the worst way: the crank's
+# setup_site job errors on every retry and the site is never served, while the unit looks
+# correctly hardened. You cannot both forbid privilege escalation and require a sudo call.
+#
+# The compensating control is that the grant is narrow by construction: a single root-owned
+# script at a fixed path outside the deploy checkout, allowed via one visudo-validated NOPASSWD
+# rule, which runs `nginx -t` before reloading. sme-dashboard keeps NoNewPrivileges=true — it
+# needs no privileged action at all.
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/srv/sme /etc/nginx/sme-sites
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sme-api
+
+[Install]
+WantedBy=multi-user.target

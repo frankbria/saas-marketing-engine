@@ -181,9 +181,16 @@ class Settings(BaseSettings):
     # None until configured (Stripe setup + checkout then fail loudly).
     stripe_api_key: SecretStr | None = None
 
-    # v1 VPS ports (verified free — see infra/deploy/PORTS.md). SQLite is a file, no port.
-    api_port: int = 8010
-    dashboard_port: int = 3010
+    # VPS ports — see infra/deploy/PORTS.md. Moved 8010/3010 → 8020/3020 in S0.5 (#80): both
+    # original ports had been claimed by other projects on the shared box before we ever bound
+    # them, which is also why the old "verified free" note here was wrong by the time it mattered.
+    #
+    # Nothing in the app reads these; the actual bind comes from ${SME_API_PORT} in the systemd
+    # unit's ExecStart, and nginx proxies to the same value rendered into its snippet. They exist
+    # so the recognized env keys have a schema — keep them in step with PORTS.md, and do not
+    # mistake them for the source of truth about what is listening.
+    api_port: int = 8020
+    dashboard_port: int = 3020
 
     # S2.4 welcome email. Outbound SMTP (or any free ESP that speaks SMTP). `smtp_host` unset ⇒
     # email is disabled (capture still works; the send is skipped + logged). `smtp_password` is a
@@ -200,6 +207,17 @@ class Settings(BaseSettings):
     # are deployed (on the VPS this is nginx's web root; a vhost per marketing_domain is emitted).
     public_api_base_url: str = "http://localhost:8010"
     nginx_sites_root: str = "./deploy/sites"
+    # S0.5 (#80): where the shared nginx snippets live (`/etc/nginx/snippets` on the VPS). Each
+    # generated vhost `include`s the ACME challenge location, the public-API allowlist, and a
+    # per-domain TLS wildcard from here. Kept out of the generated file itself because
+    # `deploy_site` rewrites that file on every `setup_site` run — anything certbot's nginx plugin
+    # wrote there would be silently erased, leaving a valid certificate nobody serves.
+    nginx_snippets_root: str = "./deploy/snippets"
+    # Command run after a vhost is written, to make nginx re-read it. Empty (the default) means
+    # "don't" — dev and CI have no nginx, and shelling out there would just fail. Production sets
+    # `sudo /usr/local/sbin/sme-nginx-reload`, which tests the config before reloading so a bad
+    # generated vhost can't take down the other projects on the shared box.
+    nginx_reload_command: str = ""
 
     # S4.8.2 per-provider OAuth redirect flow. `oauth_redirect_base_url` is the *backend* origin the
     # provider redirects the operator's browser back to — the callback path is appended to build the

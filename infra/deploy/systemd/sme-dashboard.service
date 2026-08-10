@@ -1,0 +1,38 @@
+[Unit]
+# The operator's Next dashboard. Private surface: loopback-only, reached over an SSH tunnel
+# (NFR-1 — no auth in v1, so it must never be routable from the internet). Deliberately NOT
+# proxied by nginx; the public vhost 404s everything under /api/ that isn't funnel or stripe.
+Description=SaaS Marketing Engine operator dashboard (Next.js)
+Documentation=https://github.com/frankbria/saas-marketing-engine/blob/main/infra/deploy/RUNBOOK.md
+After=network-online.target sme-api.service
+Wants=network-online.target
+# StartLimit* belong in [Unit] — systemd ignores them in [Service] with only a log warning.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=sme
+Group=sme
+WorkingDirectory=/opt/sme/current/dashboard
+EnvironmentFile=/etc/sme/sme.env
+
+# The box's default node is 20; Next 16 is built and run against the nvm node 24 that .nvmrc
+# pins. deploy.sh builds with the same PATH, so build and runtime cannot drift apart.
+Environment=NODE_ENV=production
+ExecStart=/bin/sh -c 'PATH=${SME_NODE_BIN}:$PATH exec npm run start -- --hostname 127.0.0.1 --port ${SME_DASHBOARD_PORT}'
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sme-dashboard
+
+[Install]
+WantedBy=multi-user.target
