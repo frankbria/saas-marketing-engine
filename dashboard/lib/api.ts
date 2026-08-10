@@ -419,3 +419,13 @@ export const getFunnel = (productId: number) =>
 // item carrying its own funnel metrics.
 export const getContentCalendar = (productId: number) =>
   apiFetch<CalendarItem[]>(`/content/${productId}/calendar`, { method: "GET" })
+
+// S4.1.1 (#82): operator-triggered crank. 202 + job id, mirroring the other trigger routes.
+// 409s unless the product is `live`, if a crank is already in flight, or if there is nothing
+// eligible to fan out to. `channelId` narrows the run to a single channel — useful for
+// validating one connection without spending tokens on all of them.
+export const triggerCrank = (productId: number, channelId?: number) =>
+  apiFetch<{ job_id: number; status: string }>(
+    `/crank/${productId}${channelId === undefined ? "" : `?channel_id=${channelId}`}`,
+    { method: "POST" }
+  )

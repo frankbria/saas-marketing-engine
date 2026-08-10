@@ -26,6 +26,16 @@ from app.worker import enqueue, handler
 
 WEEKLY_SECONDS = 7 * 24 * 3600
 
+# S4.1.1 (#82): the operator-triggered crank runs the *same* fan-out under a different `kind`.
+#
+# Why a separate kind rather than a `trigger` column on job_run: `enqueue_due_cranks` decides
+# due-ness by asking "is there a recent `crank` row?", so recording a manual run as `crank` would
+# suppress the next scheduled crank for a whole cadence window — the operator's demo run would
+# cost the product its real cycle. A distinct kind keeps the cadence query blind to manual runs
+# with no query change and, more importantly, no schema change: v1 has no Alembic (`init_db` is
+# `create_all`), so a new column would simply not exist on an already-deployed database.
+MANUAL_CRANK_KIND = "crank_manual"
+
 
 class ContentType(StrEnum):
     SOCIAL = "social"
@@ -73,24 +83,42 @@ def enqueue_due_cranks(session: Session, now: datetime) -> list[JobRun]:
     return enqueued
 
 
+def eligible_channels(
+    session: Session, product_id: int, channel_id: int | None = None
+) -> list[Channel]:
+    """Channels a crank would fan out to: enabled, autonomous, unpaused, token still good.
+
+    Shared with the manual-crank route (S4.1.1) so the dashboard can refuse a crank that would
+    fan out to nothing, and name the channel it was asked about, instead of queueing a job whose
+    only outcome is an empty fan-out.
+    """
+    query = select(Channel).where(
+        Channel.product_id == product_id,
+        Channel.enabled,
+        Channel.autonomous,
+        ~Channel.paused,  # per-channel kill switch (S4.6)
+        Channel.connect_state != ConnectState.FAILED,  # dead-token channel (S4.8)
+    )
+    if channel_id is not None:
+        query = query.where(Channel.id == channel_id)
+    return list(session.exec(query).all())
+
+
 @handler("crank")
+@handler(MANUAL_CRANK_KIND)
 def _run_crank(job: JobRun, session: Session) -> int:
-    """Fan out one `generate` child per enabled autonomous channel × content type."""
+    """Fan out one `generate` child per enabled autonomous channel × content type.
+
+    A manual crank (S4.1.1) may carry a `channel_id`, narrowing the fan-out to that one channel
+    so an operator can validate a single connection without spending tokens on all of them.
+    """
     if job.product_id is None:
         raise LookupError("crank job has no product_id")
     product = session.get(Product, job.product_id)
     if product is None:
         raise LookupError(f"product {job.product_id} not found")
 
-    channels = session.exec(
-        select(Channel).where(
-            Channel.product_id == product.id,
-            Channel.enabled,
-            Channel.autonomous,
-            ~Channel.paused,  # per-channel kill switch (S4.6)
-            Channel.connect_state != ConnectState.FAILED,  # dead-token channel (S4.8)
-        )
-    ).all()
+    channels = eligible_channels(session, product.id, job.channel_id)
 
     for channel in channels:
         for content_type in _CHANNEL_CONTENT_TYPES.get(channel.type, ()):

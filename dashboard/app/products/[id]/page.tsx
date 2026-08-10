@@ -21,6 +21,7 @@ import { ChannelSetup } from "./channel-setup"
 import { ContentCalendar } from "./content-calendar"
 import { Funnel } from "./funnel"
 import { LaunchChecklist } from "./launch-checklist"
+import { ManualCrank } from "./manual-crank"
 import { PublishedContent } from "./published-content"
 import { QaChecklist } from "./qa-checklist"
 import { SmokeTest } from "./smoke-test"
@@ -140,6 +141,12 @@ export default async function ProductDetailPage({
         productId={productId}
         lifecycleState={product.lifecycle_state}
         items={qaItems}
+      />
+
+      <ManualCrank
+        productId={productId}
+        lifecycleState={product.lifecycle_state}
+        channels={channels}
       />
 
       <PublishedContent productId={productId} items={publishedItems} />
