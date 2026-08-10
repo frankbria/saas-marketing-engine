@@ -18,6 +18,7 @@ import {
   setChecklistItemStatus,
   setQaItemStatus,
   triggerChannelSetup,
+  triggerCrank,
   triggerQaChecklist,
   updateProduct,
   updateStrategy,
@@ -102,6 +103,21 @@ describe("channels + setup checklist (S2.6)", () => {
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toContain("/api/private/channels/7/setup")
     expect(init?.method).toBe("POST")
+  })
+
+  it("triggerCrank POSTs the crank endpoint with no channel filter by default", async () => {
+    const fetchMock = mockFetch({ job_id: 3, status: "queued" })
+    await triggerCrank(7)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain("/api/private/crank/7")
+    expect(url).not.toContain("channel_id")
+    expect(init?.method).toBe("POST")
+  })
+
+  it("triggerCrank passes channel_id when narrowing to one channel", async () => {
+    const fetchMock = mockFetch({ job_id: 4, status: "queued" })
+    await triggerCrank(7, 12)
+    expect(fetchMock.mock.calls[0][0]).toContain("/api/private/crank/7?channel_id=12")
   })
 
   it("listChannels GETs the channels endpoint", async () => {
