@@ -21,7 +21,12 @@ from app.models import (
     MetricStage,
     Product,
 )
-from app.modules.heartbeat import build_digest, evaluate_alerts, run_heartbeat
+from app.modules.heartbeat import (
+    _newest_publish,
+    build_digest,
+    evaluate_alerts,
+    run_heartbeat,
+)
 
 NOW = datetime(2026, 7, 2, 6, 0, tzinfo=UTC)
 
@@ -235,6 +240,73 @@ def test_alert_zero_reach_when_published_but_no_reach(engine):
         alerts = evaluate_alerts(s, p, digest, NOW)
 
     assert [a["kind"] for a in alerts] == ["zero_reach"]
+
+
+# S6.2.2 (#89): the alert reports how old the newest post is, because that is the one fact that
+# separates its two readings — "the first post is three hours old and hasn't earned an upvote
+# yet" (a false alarm) from "these have been up for six days and nobody has seen them" (a real
+# shadowban). Without it the message is identical in both cases and the only way to tell is to
+# query the database by hand, which is exactly what #89 exists to avoid during the #34 run.
+# This is descriptive only: no alert starts or stops firing because of it.
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        (timedelta(minutes=45), "newest is 45m old"),
+        (timedelta(hours=4), "newest is 4h old"),
+        (timedelta(hours=26), "newest is 1d old"),
+        (timedelta(days=6, hours=5), "newest is 6d old"),
+    ],
+)
+def test_zero_reach_alert_reports_the_newest_post_age(engine, age, expected):
+    p = _make_product(engine)
+    ch = _make_channel(engine, p.id, ChannelType.REDDIT)
+    _add_item(engine, p.id, ch.id, status=ContentItemStatus.PUBLISHED, published_at=NOW - age)
+
+    with Session(engine) as s:
+        alerts = evaluate_alerts(s, p, build_digest(s, p, NOW), NOW)
+
+    assert [a["kind"] for a in alerts] == ["zero_reach"]
+    assert expected in alerts[0]["message"]
+
+
+def test_zero_reach_age_tracks_the_newest_post_not_the_oldest(engine):
+    """A channel that is still posting is a different story from one that went quiet.
+
+    The oldest post's age would say "6 days of silence" about a channel that published an hour
+    ago — the reading this field exists to prevent getting wrong.
+    """
+    p = _make_product(engine)
+    ch = _make_channel(engine, p.id, ChannelType.REDDIT)
+    for age in (timedelta(days=6), timedelta(days=2), timedelta(hours=3)):
+        _add_item(engine, p.id, ch.id, status=ContentItemStatus.PUBLISHED, published_at=NOW - age)
+
+    with Session(engine) as s:
+        alerts = evaluate_alerts(s, p, build_digest(s, p, NOW), NOW)
+
+    assert "published 3 item(s)" in alerts[0]["message"]
+    assert "newest is 3h old" in alerts[0]["message"]
+
+
+def test_newest_publish_is_none_when_nothing_published_in_the_window(engine):
+    """The defensive branch the alert path can't reach — `published_in_window > 0` guards it.
+
+    Pinned directly so the helper stays honest if anything else ever calls it, rather than
+    excluded from coverage as unreachable.
+    """
+    p = _make_product(engine)
+    ch = _make_channel(engine, p.id, ChannelType.REDDIT)
+    _add_item(
+        engine,
+        p.id,
+        ch.id,
+        status=ContentItemStatus.PUBLISHED,
+        published_at=NOW - timedelta(days=30),
+    )
+
+    with Session(engine) as s:
+        assert _newest_publish(s, ch.id, NOW - timedelta(days=7), NOW) is None
 
 
 def test_no_zero_reach_alert_when_channel_has_reach(engine):

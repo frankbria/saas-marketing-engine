@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlmodel import Session, func, select
 
@@ -81,6 +81,32 @@ def _reach(session: Session, channel_id: int, since: datetime, now: datetime) ->
         )
     ).one()
     return int(total)
+
+
+def _age_label(delta: timedelta) -> str:
+    """Coarse human age: `45m` / `4h` / `6d`. One unit is enough to read the alert at a glance."""
+    seconds = max(int(delta.total_seconds()), 0)
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def _newest_publish(session: Session, channel_id: int, since: datetime, now: datetime):
+    """When this channel last published inside the window, as aware UTC (None if never)."""
+    newest = session.exec(
+        select(func.max(ContentItem.published_at)).where(
+            ContentItem.channel_id == channel_id,
+            ContentItem.published_at > since,  # type: ignore[arg-type]
+            ContentItem.published_at <= now,  # type: ignore[arg-type]
+        )
+    ).one()
+    if newest is None:
+        return None
+    # SQLite hands datetimes back tz-naive; normalize so arithmetic against the aware `now`
+    # doesn't raise offset-naive/offset-aware TypeErrors (same fix as publish.py::_latest_slot).
+    return newest if newest.tzinfo else newest.replace(tzinfo=UTC)
 
 
 def build_digest(session: Session, product: Product, now: datetime) -> dict:
@@ -153,13 +179,21 @@ def evaluate_alerts(session: Session, product: Product, digest: dict, now: datet
         if published_in_window == 0:
             continue
         if _reach(session, row["channel_id"], window_start, now) == 0:
+            # S6.2.2 (#89): the newest post's age is what separates this alert's two readings —
+            # "the first post is hours old and hasn't earned an upvote yet" from "these have been
+            # up for days and nobody has seen them". Same message without it, so the only way to
+            # tell them apart was to query the DB by hand. Descriptive only: the alert fires on
+            # exactly the same condition as before. Whether a *minimum post age* should suppress
+            # the alert is the open question in #89, gated on evidence from the S6.4 run (#34).
+            newest = _newest_publish(session, row["channel_id"], window_start, now)
+            age = f"; newest is {_age_label(now - newest)} old" if newest else ""
             alerts.append(
                 _alert(
                     row,
                     "zero_reach",
                     f"{row['channel_type']} published {published_in_window} item(s) over "
-                    f"{settings.heartbeat_zero_reach_window_days}d with zero reach "
-                    "(shadowban signal)",
+                    f"{settings.heartbeat_zero_reach_window_days}d with zero reach"
+                    f"{age} (shadowban signal)",
                 )
             )
     return alerts
