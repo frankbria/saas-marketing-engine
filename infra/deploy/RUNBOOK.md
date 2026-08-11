@@ -41,6 +41,8 @@ bash /tmp/sme-bootstrap/infra/deploy/provision.sh
 #    Generate one with:
 #      uv run --with cryptography python -c \
 #        'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+#    SECRETS.md walks through where each credential comes from, which are optional, and the
+#    Reddit connect flow (which is NOT the dashboard's OAuth buttons).
 $EDITOR /etc/sme/sme.env
 
 # 4. Deploy.
