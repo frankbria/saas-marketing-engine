@@ -37,6 +37,19 @@ on:
 
 jobs:
   check:
-    uses: frankbria/glm-review/.github/workflows/check-workflow-calls.yml@main
+    # SHA-pinned, and deliberately NOT `@main` like this repo's glm-review.yml.
+    # The distinction is about what happens when a pin goes stale, and it is not
+    # the same for the two files. If upstream adds a scope to the callee's job,
+    # an `@main` caller granting the minimal set startup_fails — no log, no
+    # annotation naming the scope. For the *reviewer* that is survivable: a
+    # missing review is eventually noticed. For the *guard* it is not: nothing
+    # else watches the guard, and its own triggers only fire on changes in this
+    # repo, so upstream drift would never be reported. The one workflow whose
+    # silent failure has no backstop is the one that must not float.
+    uses: frankbria/glm-review/.github/workflows/check-workflow-calls.yml@21fea324f518b964919709eebbbb9f5b3acde489 # 2026-09-08 (main; no tags upstream)
+    with:
+      # Same commit as the workflow above, so the checker script and the workflow
+      # cannot drift apart.
+      guard_ref: 21fea324f518b964919709eebbbb9f5b3acde489
     permissions:
       contents: read
