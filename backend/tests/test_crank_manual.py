@@ -204,12 +204,15 @@ def test_concurrent_enqueues_produce_exactly_one_crank(session):
     """
     product = _product(session)
     _channel(session, product.id)
+    # Read once here: lazy-loading `product.id` from 8 threads on one session crashes threads
+    # before they reach the lock, so the race would never actually be exercised.
+    product_id = product.id
     results: list[JobRun | None] = []
     barrier = threading.Barrier(8)
 
     def attempt() -> None:
         barrier.wait()  # release all threads into the critical section together
-        results.append(enqueue_manual_crank(session, product.id))
+        results.append(enqueue_manual_crank(session, product_id))
 
     threads = [threading.Thread(target=attempt) for _ in range(8)]
     for thread in threads:
